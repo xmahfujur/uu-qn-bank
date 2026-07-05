@@ -1,0 +1,82 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper to get user role
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Helper function to check if the user is super admin
+    function isAdmin() {
+      return isAuthenticated() && (
+        (request.auth.token.email != null && request.auth.token.email.matches('(?i)mr074770@gmail\\.com')) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'super_admin')
+      );
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // Departments, Batches, Semesters
+    match /departments/{deptId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    match /batches/{batchId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    match /semesters/{semesterId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Questions collection
+    match /questions/{questionId} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update: if (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views', 'downloads', 'reportCount'])) ||
+        (isAuthenticated() && (
+          resource.data.uploadedByUID == request.auth.uid || 
+          isAdmin() || 
+          // Allow updating views, downloads, likes, bookmarks, and reports safely
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views', 'downloads', 'likes', 'likedBy', 'bookmarks', 'reportCount']))
+        ));
+      allow delete: if isAuthenticated() && (resource.data.uploadedByUID == request.auth.uid || isAdmin());
+    }
+
+    // Reports collection
+    match /reports/{reportId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated() && request.resource.data.reportedByUID == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    // Bookmarks and Likes
+    match /bookmarks/{bookmarkId} {
+      allow read, write: if isAuthenticated() && request.auth.uid == resource.data.userId;
+      allow create: if isAuthenticated();
+    }
+    
+    match /notifications/{notifId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+  }
+}
