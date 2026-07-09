@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper function to check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper to get user role
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Helper function to check if the user is super admin
+    function isAdmin() {
+      return isAuthenticated() && (
+        (request.auth.token.email != null && request.auth.token.email.matches('(?i)mr074770@gmail\\.com')) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'super_admin')
+      );
+    }
+
+    // Helper function to check if the user is moderator or super admin
+    function isModerator() {
+      return isAuthenticated() && (
+        isAdmin() ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'moderator')
+      );
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && (
+        (request.auth.uid == userId && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'banned'])) ||
+        isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Departments, Batches, Semesters (Moderators & Super Admins can manage academic hierarchy)
+    match /departments/{deptId} {
+      allow read: if true;
+      allow write: if isModerator();
+    }
+    
+    match /batches/{batchId} {
+      allow read: if true;
+      allow write: if isModerator();
+    }
+    
+    match /semesters/{semesterId} {
+      allow read: if true;
+      allow write: if isModerator();
+    }
+
+    // Questions collection
+    match /questions/{questionId} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update: if (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views', 'downloads', 'reportCount'])) ||
+        (isAuthenticated() && (
+          resource.data.uploadedByUID == request.auth.uid || 
+          isModerator() || 
+          // Allow updating views, downloads, likes, bookmarks, and reports safely
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views', 'downloads', 'likes', 'likedBy', 'bookmarks', 'reportCount']))
+        ));
+      allow delete: if isAuthenticated() && (resource.data.uploadedByUID == request.auth.uid || isModerator());
+    }
+
+    // Reports collection
+    match /reports/{reportId} {
+      allow read: if isModerator();
+      allow create: if isAuthenticated() && request.resource.data.reportedByUID == request.auth.uid;
+      allow update, delete: if isModerator();
+    }
+
+    // Bookmarks and Likes
+    match /bookmarks/{bookmarkId} {
+      allow read, write: if isAuthenticated() && request.auth.uid == resource.data.userId;
+      allow create: if isAuthenticated();
+    }
+    
+    match /notifications/{notifId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+  }
+}
