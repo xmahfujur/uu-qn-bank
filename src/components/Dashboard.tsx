@@ -962,7 +962,7 @@ export default function Dashboard({
 
       {/* Academic Exam Countdown Alert Banner */}
       {(() => {
-        if (!upcomingEvent) return null;
+        if (!upcomingEvent || searchQuery.trim()) return null;
 
         const title = upcomingEvent.title;
         const typeLabel = upcomingEvent.type;
@@ -971,85 +971,116 @@ export default function Dashboard({
         const countdown = getEventCountdown(startDate);
 
         return (
-          <div className="relative overflow-hidden bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-indigo-500/30 rounded-2xl sm:rounded-3xl p-3.5 sm:p-4 md:p-5 shadow-xl mb-6 text-white">
-            <div className="absolute top-0 right-0 -mr-12 -mt-12 w-48 h-48 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none"></div>
-
-            <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4">
-              
-              {/* Left Column: Semester Exam Term Title & Badges */}
-              <div className="space-y-1.5 max-w-lg">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="px-2 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-400/30 text-[10px] font-black uppercase tracking-wider rounded-md flex items-center gap-1">
-                    <Sparkles className="w-3 h-3 text-amber-400 animate-pulse" />
-                    EXAM ALERT
-                  </span>
-                  <span className="px-2 py-0.5 bg-indigo-500/30 text-indigo-200 border border-indigo-400/30 text-[10px] font-bold rounded-md">
-                    {typeLabel} Exam
-                  </span>
-                </div>
-
-                <h2 className="text-base sm:text-lg md:text-xl font-extrabold font-display tracking-tight text-white leading-snug">
+          <>
+            {/* Mobile View: Single Line Sleek Banner (< sm) */}
+            <div className="sm:hidden overflow-hidden bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-indigo-500/30 rounded-xl px-2.5 py-1.5 shadow-md mb-4 text-white flex items-center justify-between gap-2 text-[11px]">
+              <div className="flex items-center gap-1.5 min-w-0 truncate">
+                <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 text-[9px] font-black uppercase rounded shrink-0 flex items-center gap-1">
+                  <Sparkles className="w-2.5 h-2.5 text-amber-400 animate-pulse" />
+                  {typeLabel}
+                </span>
+                <span className="font-bold text-white truncate text-[11px]">
                   {title}
-                </h2>
-
-                <p className="text-[11px] sm:text-xs text-indigo-200/90 font-medium flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                  <span>
-                    Exam Date: <strong className="text-white font-bold">{startDate}</strong> {endDate ? `to ${endDate}` : ''}
-                  </span>
-                </p>
+                </span>
               </div>
 
-              {/* Right Column: Live Countdown Ticker & Action */}
-              <div className="flex items-center justify-between sm:justify-start gap-2 sm:gap-3 shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-indigo-800/50">
-                
-                {/* Live Digital Countdown Display */}
-                <div className="flex items-center gap-1 sm:gap-1.5 bg-slate-950/80 p-1.5 sm:p-2 rounded-xl border border-indigo-500/30 shadow-inner">
-                  <div className="flex flex-col items-center justify-center w-9 sm:w-11 h-9 sm:h-11 bg-slate-900 rounded-lg border border-indigo-500/20">
-                    <span className="text-xs sm:text-sm font-black font-mono text-amber-400">
-                      {String(countdown.days).padStart(2, '0')}
-                    </span>
-                    <span className="text-[8px] font-bold text-indigo-300 uppercase">Days</span>
-                  </div>
-                  <span className="text-xs font-bold text-indigo-500">:</span>
-                  <div className="flex flex-col items-center justify-center w-9 sm:w-11 h-9 sm:h-11 bg-slate-900 rounded-lg border border-indigo-500/20">
-                    <span className="text-xs sm:text-sm font-black font-mono text-white">
-                      {String(countdown.hours).padStart(2, '0')}
-                    </span>
-                    <span className="text-[8px] font-bold text-indigo-300 uppercase">Hrs</span>
-                  </div>
-                  <span className="text-xs font-bold text-indigo-500">:</span>
-                  <div className="flex flex-col items-center justify-center w-9 sm:w-11 h-9 sm:h-11 bg-slate-900 rounded-lg border border-indigo-500/20">
-                    <span className="text-xs sm:text-sm font-black font-mono text-white">
-                      {String(countdown.minutes).padStart(2, '0')}
-                    </span>
-                    <span className="text-[8px] font-bold text-indigo-300 uppercase">Min</span>
-                  </div>
-                  <span className="text-xs font-bold text-indigo-500">:</span>
-                  <div className="flex flex-col items-center justify-center w-9 sm:w-11 h-9 sm:h-11 bg-indigo-600 rounded-lg border border-indigo-400/40 shadow">
-                    <span className="text-xs sm:text-sm font-black font-mono text-white animate-pulse">
-                      {String(countdown.seconds).padStart(2, '0')}
-                    </span>
-                    <span className="text-[8px] font-bold text-indigo-100 uppercase">Sec</span>
-                  </div>
-                </div>
-
-                {/* Calendar Link Button */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span className="text-[10px] font-mono font-bold text-amber-300 bg-slate-950/80 px-1.5 py-0.5 rounded border border-indigo-500/30">
+                  {countdown.days}d {countdown.hours}h {countdown.minutes}m
+                </span>
                 {onNavigateToCalendar && (
                   <button
                     onClick={onNavigateToCalendar}
-                    className="px-3 py-2 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-1.5 text-[11px] shrink-0"
+                    className="p-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md shrink-0"
+                    title="View Calendar"
                   >
-                    <Clock className="w-3.5 h-3.5 text-amber-300" />
-                    <span className="hidden xs:inline">Calendar</span>
                     <ArrowRight className="w-3 h-3" />
                   </button>
                 )}
+              </div>
+            </div>
+
+            {/* Desktop / Tablet View (sm+) */}
+            <div className="hidden sm:block relative overflow-hidden bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-indigo-500/30 rounded-2xl sm:rounded-3xl p-3.5 sm:p-4 md:p-5 shadow-xl mb-6 text-white">
+              <div className="absolute top-0 right-0 -mr-12 -mt-12 w-48 h-48 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none"></div>
+
+              <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4">
+                
+                {/* Left Column: Semester Exam Term Title & Badges */}
+                <div className="space-y-1.5 max-w-lg">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="px-2 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-400/30 text-[10px] font-black uppercase tracking-wider rounded-md flex items-center gap-1">
+                      <Sparkles className="w-3 h-3 text-amber-400 animate-pulse" />
+                      EXAM ALERT
+                    </span>
+                    <span className="px-2 py-0.5 bg-indigo-500/30 text-indigo-200 border border-indigo-400/30 text-[10px] font-bold rounded-md">
+                      {typeLabel} Exam
+                    </span>
+                  </div>
+
+                  <h2 className="text-base sm:text-lg md:text-xl font-extrabold font-display tracking-tight text-white leading-snug">
+                    {title}
+                  </h2>
+
+                  <p className="text-[11px] sm:text-xs text-indigo-200/90 font-medium flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                    <span>
+                      Exam Date: <strong className="text-white font-bold">{startDate}</strong> {endDate ? `to ${endDate}` : ''}
+                    </span>
+                  </p>
+                </div>
+
+                {/* Right Column: Live Countdown Ticker & Action */}
+                <div className="flex items-center justify-between sm:justify-start gap-2 sm:gap-3 shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-indigo-800/50">
+                  
+                  {/* Live Digital Countdown Display */}
+                  <div className="flex items-center gap-1 sm:gap-1.5 bg-slate-950/80 p-1.5 sm:p-2 rounded-xl border border-indigo-500/30 shadow-inner">
+                    <div className="flex flex-col items-center justify-center w-9 sm:w-11 h-9 sm:h-11 bg-slate-900 rounded-lg border border-indigo-500/20">
+                      <span className="text-xs sm:text-sm font-black font-mono text-amber-400">
+                        {String(countdown.days).padStart(2, '0')}
+                      </span>
+                      <span className="text-[8px] font-bold text-indigo-300 uppercase">Days</span>
+                    </div>
+                    <span className="text-xs font-bold text-indigo-500">:</span>
+                    <div className="flex flex-col items-center justify-center w-9 sm:w-11 h-9 sm:h-11 bg-slate-900 rounded-lg border border-indigo-500/20">
+                      <span className="text-xs sm:text-sm font-black font-mono text-white">
+                        {String(countdown.hours).padStart(2, '0')}
+                      </span>
+                      <span className="text-[8px] font-bold text-indigo-300 uppercase">Hrs</span>
+                    </div>
+                    <span className="text-xs font-bold text-indigo-500">:</span>
+                    <div className="flex flex-col items-center justify-center w-9 sm:w-11 h-9 sm:h-11 bg-slate-900 rounded-lg border border-indigo-500/20">
+                      <span className="text-xs sm:text-sm font-black font-mono text-white">
+                        {String(countdown.minutes).padStart(2, '0')}
+                      </span>
+                      <span className="text-[8px] font-bold text-indigo-300 uppercase">Min</span>
+                    </div>
+                    <span className="text-xs font-bold text-indigo-500">:</span>
+                    <div className="flex flex-col items-center justify-center w-9 sm:w-11 h-9 sm:h-11 bg-indigo-600 rounded-lg border border-indigo-400/40 shadow">
+                      <span className="text-xs sm:text-sm font-black font-mono text-white animate-pulse">
+                        {String(countdown.seconds).padStart(2, '0')}
+                      </span>
+                      <span className="text-[8px] font-bold text-indigo-100 uppercase">Sec</span>
+                    </div>
+                  </div>
+
+                  {/* Calendar Link Button */}
+                  {onNavigateToCalendar && (
+                    <button
+                      onClick={onNavigateToCalendar}
+                      className="px-3 py-2 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-1.5 text-[11px] shrink-0"
+                    >
+                      <Clock className="w-3.5 h-3.5 text-amber-300" />
+                      <span className="hidden xs:inline">Calendar</span>
+                      <ArrowRight className="w-3 h-3" />
+                    </button>
+                  )}
+
+                </div>
 
               </div>
-
             </div>
-          </div>
+          </>
         );
       })()}
 
