@@ -21,7 +21,8 @@ import {
   ExternalLink,
   Mail,
   Cpu,
-  ChevronUp
+  ChevronUp,
+  Loader2
 } from 'lucide-react';
 import { signInWithPopup, signInWithRedirect, getRedirectResult, signOut } from 'firebase/auth';
 import { auth, googleProvider, syncUserProfile } from '../firebase/config';
@@ -49,8 +50,9 @@ export default function Layout({
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  // Handle redirect sign-in result on page mount
+  // Handle redirect sign-in result on page mount (for existing redirect sessions)
   React.useEffect(() => {
     getRedirectResult(auth)
       .then(async (result) => {
@@ -61,7 +63,6 @@ export default function Layout({
       })
       .catch((err: any) => {
         console.error('Redirect sign-in result error:', err);
-        // Ignore user cancellation errors silently
         if (
           err?.code === 'auth/popup-closed-by-user' || 
           err?.code === 'auth/cancelled-popup-request' ||
@@ -69,54 +70,41 @@ export default function Layout({
         ) {
           return;
         }
-        setAuthError('Sign-in could not be completed. Please try signing in again.');
       });
   }, []);
 
   async function handleLogin() {
     setAuthError(null);
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-
-    // On mobile devices, use direct redirect to avoid popup blocker issues
-    if (isMobile) {
-      try {
-        await signInWithRedirect(auth, googleProvider);
-        return;
-      } catch (err: any) {
-        console.error('Mobile redirect auth error:', err);
-        setAuthError('Unable to open sign-in window. Please try again.');
-        return;
-      }
-    }
+    setIsLoggingIn(true);
 
     try {
       const result = await signInWithPopup(auth, googleProvider);
-      const profile = await syncUserProfile(result.user);
-      setCurrentUser(profile);
+      if (result?.user) {
+        const profile = await syncUserProfile(result.user);
+        setCurrentUser(profile);
+      }
     } catch (err: any) {
       console.error('Google Auth Login error:', err);
 
-      // Ignore normal user close actions
+      // Ignore normal user close or cancellation actions
       if (
         err?.code === 'auth/popup-closed-by-user' || 
         err?.code === 'auth/cancelled-popup-request' ||
         err?.code === 'auth/user-cancelled'
       ) {
+        setIsLoggingIn(false);
         return;
       }
 
-      // If popup was blocked by browser on desktop, prompt user to continue via direct redirect
-      setAuthError('Sign-in popup was blocked by your browser settings. Please click "Continue with Direct Sign-In" below.');
-    }
-  }
-
-  async function handleLoginWithRedirect() {
-    setAuthError(null);
-    try {
-      await signInWithRedirect(auth, googleProvider);
-    } catch (err: any) {
-      console.error('Google Auth Redirect error:', err);
-      setAuthError('Sign-in failed. Please try again later.');
+      if (err?.code === 'auth/popup-blocked') {
+        setAuthError('Sign-in window was blocked by your browser settings. Please allow popups for this site and click Sign In again.');
+      } else if (err?.code === 'auth/unauthorized-domain') {
+        setAuthError('This website domain is pending authorization in Firebase Auth settings.');
+      } else {
+        setAuthError(err?.message || 'Sign-in could not be completed. Please try again.');
+      }
+    } finally {
+      setIsLoggingIn(false);
     }
   }
 
@@ -232,10 +220,20 @@ export default function Layout({
                     onOpenUpload();
                   }
                 }}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-indigo-600/15 transition-all"
+                disabled={isLoggingIn}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-indigo-600/15 transition-all disabled:opacity-50 cursor-pointer"
               >
-                <Upload className="w-3.5 h-3.5" />
-                Upload Paper {!currentUser && '(Login Required)'}
+                {isLoggingIn ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Signing in...</span>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Upload Paper {!currentUser && '(Login Required)'}</span>
+                  </>
+                )}
               </button>
 
               {currentUser ? (
@@ -243,7 +241,7 @@ export default function Layout({
                   <button
                     id="nav-user-dropdown-btn"
                     onClick={() => setShowUserDropdown(!showUserDropdown)}
-                    className="flex items-center gap-2 p-1 bg-slate-50 dark:bg-slate-900 border border-slate-200/55 dark:border-slate-800 rounded-xl hover:bg-slate-100 transition-all text-left"
+                    className="flex items-center gap-2 p-1 bg-slate-50 dark:bg-slate-900 border border-slate-200/55 dark:border-slate-800 rounded-xl hover:bg-slate-100 transition-all text-left cursor-pointer"
                   >
                     <img 
                       src={currentUser.photoURL} 
@@ -267,7 +265,7 @@ export default function Layout({
                           setActiveView('profile');
                           setShowUserDropdown(false);
                         }}
-                        className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-xl transition-colors font-medium text-left"
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-xl transition-colors font-medium text-left cursor-pointer"
                       >
                         <UserIcon className="w-4 h-4" />
                         My Profile Workspace
@@ -276,7 +274,7 @@ export default function Layout({
                       <button
                         id="dropdown-logout-btn"
                         onClick={handleLogout}
-                        className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 rounded-xl transition-colors font-semibold text-left"
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 rounded-xl transition-colors font-semibold text-left cursor-pointer"
                       >
                         <LogOut className="w-4 h-4" />
                         Logout
@@ -288,9 +286,17 @@ export default function Layout({
                 <button
                   id="nav-login-btn"
                   onClick={handleLogin}
-                  className="px-5 py-2.5 bg-slate-950 dark:bg-white text-white dark:text-slate-950 text-xs font-extrabold rounded-xl hover:opacity-90 transition-all shadow-sm flex items-center gap-2"
+                  disabled={isLoggingIn}
+                  className="px-5 py-2.5 bg-slate-950 dark:bg-white text-white dark:text-slate-950 text-xs font-extrabold rounded-xl hover:opacity-90 transition-all shadow-sm flex items-center gap-2 disabled:opacity-50 cursor-pointer"
                 >
-                  Sign In with Google
+                  {isLoggingIn ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Signing in...</span>
+                    </>
+                  ) : (
+                    <span>Sign In with Google</span>
+                  )}
                 </button>
               )}
             </div>
@@ -407,10 +413,20 @@ export default function Layout({
                       handleLogin();
                       setMobileMenuOpen(false);
                     }}
-                    className="w-full py-2.5 bg-indigo-600 text-white font-extrabold rounded-xl text-xs flex items-center justify-center gap-1.5"
+                    disabled={isLoggingIn}
+                    className="w-full py-2.5 bg-indigo-600 text-white font-extrabold rounded-xl text-xs flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
                   >
-                    <Upload className="w-4 h-4" />
-                    Upload Paper (Login Required)
+                    {isLoggingIn ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Signing in...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-4 h-4" />
+                        <span>Upload Paper (Login Required)</span>
+                      </>
+                    )}
                   </button>
 
                   <button
@@ -418,9 +434,17 @@ export default function Layout({
                       handleLogin();
                       setMobileMenuOpen(false);
                     }}
-                    className="w-full py-2.5 bg-slate-950 dark:bg-white text-white dark:text-slate-950 font-extrabold rounded-xl text-xs"
+                    disabled={isLoggingIn}
+                    className="w-full py-2.5 bg-slate-950 dark:bg-white text-white dark:text-slate-950 font-extrabold rounded-xl text-xs flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
                   >
-                    Sign In with Google
+                    {isLoggingIn ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Signing in...</span>
+                      </>
+                    ) : (
+                      <span>Sign In with Google</span>
+                    )}
                   </button>
                 </>
               )}
@@ -442,11 +466,16 @@ export default function Layout({
               
               <div className="mt-3 flex items-center gap-2">
                 <button
-                  onClick={handleLoginWithRedirect}
-                  className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-all shadow-sm flex items-center gap-1.5"
+                  onClick={handleLogin}
+                  disabled={isLoggingIn}
+                  className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-all shadow-sm flex items-center gap-1.5 text-xs disabled:opacity-50 cursor-pointer"
                 >
-                  <BookOpen className="w-3.5 h-3.5" />
-                  Continue with Direct Sign-In
+                  {isLoggingIn ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <BookOpen className="w-3.5 h-3.5" />
+                  )}
+                  <span>Try Sign In Again</span>
                 </button>
               </div>
             </div>
