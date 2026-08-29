@@ -1,0 +1,8 @@
+{
+  "name": "UU Qn Bank",
+  "description": "A premium portal for preserving, organizing, and accessing previous examination question papers for all departments of Uttara University.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,162 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile in the university question bank system",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "username": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "role": { "type": "string", "enum": ["super_admin", "moderator", "user"] },
+        "uploadCount": { "type": "number" },
+        "likesReceived": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "banned"] }
+      },
+      "required": ["uid", "email", "username", "createdAt", "role"]
+    },
+    "Department": {
+      "title": "Department",
+      "description": "Academic Department",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name", "code", "createdAt"]
+    },
+    "Batch": {
+      "title": "Batch",
+      "description": "Academic Batch linked to a department",
+      "type": "object",
+      "properties": {
+        "departmentId": { "type": "string" },
+        "name": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["departmentId", "name", "createdAt"]
+    },
+    "Semester": {
+      "title": "Semester",
+      "description": "Academic Semester term linked to a batch",
+      "type": "object",
+      "properties": {
+        "batchId": { "type": "string" },
+        "name": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["batchId", "name", "createdAt"]
+    },
+    "QuestionPaper": {
+      "title": "QuestionPaper",
+      "description": "Uploaded examination question paper",
+      "type": "object",
+      "properties": {
+        "courseCode": { "type": "string" },
+        "courseName": { "type": "string" },
+        "teacher": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "imageUrls": { "type": "array" },
+        "deleteUrls": { "type": "array" },
+        "pdfUrl": { "type": "string" },
+        "departmentId": { "type": "string" },
+        "batchId": { "type": "string" },
+        "semesterId": { "type": "string" },
+        "examType": { "type": "string", "enum": ["Mid", "Final"] },
+        "uploadedByUID": { "type": "string" },
+        "uploadedByUsername": { "type": "string" },
+        "uploadedAt": { "type": "string" },
+        "reportCount": { "type": "number" },
+        "downloads": { "type": "number" },
+        "views": { "type": "number" },
+        "likes": { "type": "number" },
+        "likedBy": { "type": "array" },
+        "bookmarks": { "type": "array" },
+        "status": { "type": "string", "enum": ["pending", "published", "rejected"] },
+        "verifiedByUID": { "type": "string" },
+        "verifiedByUsername": { "type": "string" },
+        "verificationFeedback": { "type": "string" }
+      },
+      "required": ["courseCode", "courseName", "departmentId", "batchId", "semesterId", "examType", "uploadedByUID", "uploadedAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Content moderation report filed against a paper",
+      "type": "object",
+      "properties": {
+        "questionId": { "type": "string" },
+        "courseCode": { "type": "string" },
+        "courseName": { "type": "string" },
+        "reportedByUID": { "type": "string" },
+        "reportedByUsername": { "type": "string" },
+        "reason": { "type": "string" },
+        "description": { "type": "string" },
+        "reportedAt": { "type": "string" }
+      },
+      "required": ["questionId", "reportedByUID", "reason", "reportedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Automated log entry for administrative and moderation actions",
+      "type": "object",
+      "properties": {
+        "action": { "type": "string" },
+        "category": { "type": "string", "enum": ["Papers", "Reports", "Users", "Hierarchy", "Faculty", "Events"] },
+        "performedByUID": { "type": "string" },
+        "performedByName": { "type": "string" },
+        "performedByEmail": { "type": "string" },
+        "performedByRole": { "type": "string" },
+        "details": { "type": "string" },
+        "targetId": { "type": "string" },
+        "targetName": { "type": "string" },
+        "metadata": { "type": "object" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["action", "category", "performedByUID", "performedByName", "performedByRole", "details", "timestamp"]
+    },
+    "AcademicEvent": {
+      "title": "AcademicEvent",
+      "description": "Academic calendar events and exam milestones",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "date": { "type": "string" },
+        "endDate": { "type": "string" },
+        "category": { "type": "string", "enum": ["exam", "holiday", "event", "deadline", "academic"] },
+        "description": { "type": "string" },
+        "isMajor": { "type": "boolean" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["title", "date", "category", "createdAt"]
+    },
+    "Faculty": {
+      "title": "Faculty",
+      "description": "Faculty member profile and directory",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "designation": { "type": "string" },
+        "departmentId": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "imageUrl": { "type": "string" }
+      },
+      "required": ["name", "designation", "departmentId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": { "schema": "UserProfile", "description": "User profiles" },
+    "/departments/{deptId}": { "schema": "Department", "description": "University departments" },
+    "/batches/{batchId}": { "schema": "Batch", "description": "Batches belonging to departments" },
+    "/semesters/{semesterId}": { "schema": "Semester", "description": "Semester periods in a batch" },
+    "/questions/{questionId}": { "schema": "QuestionPaper", "description": "Question papers" },
+    "/reports/{reportId}": { "schema": "Report", "description": "Moderation reports" },
+    "/audit_logs/{logId}": { "schema": "AuditLog", "description": "Administrative and moderation audit logs" },
+    "/academic_events/{eventId}": { "schema": "AcademicEvent", "description": "Academic events and exam dates" },
+    "/faculties/{facultyId}": { "schema": "Faculty", "description": "Faculty directory members" }
+  }
+}
