@@ -27,7 +27,11 @@ import {
   Phone,
   Star,
   ScrollText,
-  History
+  History,
+  Upload,
+  Camera,
+  Image as ImageIcon,
+  X
 } from 'lucide-react';
 import { 
   collection, 
@@ -37,8 +41,9 @@ import {
   deleteDoc, 
   doc, 
   query, 
-  where,
-  getDoc
+  where, 
+  getDoc,
+  onSnapshot
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { Department, Batch, Semester, QuestionPaper, Report, UserProfile, Faculty, AuditLog } from '../types';
@@ -48,6 +53,8 @@ import { compareSemesterNames, sortSemestersDescending } from '../utils/semester
 import { sortDepartmentsAlphabetically } from '../utils/departmentSort';
 import { deleteQuestionWithImages } from '../utils/deleteQuestion';
 import { recordAuditLog } from '../utils/auditLogger';
+import { uploadSingleImageToImgBB } from '../utils/imageUploader';
+import { formatImageUrl, handleImageError } from '../utils/imageUrl';
 
 interface AdminPanelProps {
   currentUser: any;
@@ -55,11 +62,37 @@ interface AdminPanelProps {
 }
 
 export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminPanelProps) {
-  // Navigation inside Admin Panel
-  const [activeTab, setActiveTab] = useState<'analytics' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'logs'>('analytics');
+  // Navigation inside Admin Panel with session memory so changing items never resets view
+  const [activeTab, setActiveTab] = useState<'analytics' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'logs'>(() => {
+    try {
+      const saved = sessionStorage.getItem('admin_active_tab');
+      if (saved && ['analytics', 'hierarchy', 'questions', 'users', 'reports', 'faculties', 'logs'].includes(saved)) {
+        return saved as any;
+      }
+    } catch (e) {}
+    return 'analytics';
+  });
 
-  // Loaders
-  const [loading, setLoading] = useState(false);
+  const handleTabChange = (tab: 'analytics' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'logs') => {
+    setActiveTab(tab);
+    try {
+      sessionStorage.setItem('admin_active_tab', tab);
+    } catch (e) {}
+    setSearchQuery('');
+  };
+
+  // Loaders & Async Action State
+  const [initialLoading, setInitialLoading] = useState(false);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [isAssigningSemesters, setIsAssigningSemesters] = useState(false);
+  const [isAddingFaculty, setIsAddingFaculty] = useState(false);
+  const [isUpdatingFaculty, setIsUpdatingFaculty] = useState(false);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [isUploadingEditPhoto, setIsUploadingEditPhoto] = useState(false);
+  const [showManualUrlInput, setShowManualUrlInput] = useState(false);
+  const [showEditManualUrlInput, setShowEditManualUrlInput] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
+  const [verifyingPaperId, setVerifyingPaperId] = useState<string | null>(null);
 
   // Core Data Lists
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -128,74 +161,108 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
   } | null>(null);
   const [dialogInputText, setDialogInputText] = useState('');
 
-  // Reload lists trigger
-  const [refreshTrigger, setRefreshTrigger] = useState(0);
-
+  // Real-time synchronization across all platform collections
   useEffect(() => {
-    async function fetchAdminData() {
-      setLoading(true);
-      try {
-        // Load Departments
-        const deptSnap = await getDocs(collection(db, 'departments'));
-        const depts: Department[] = [];
-        deptSnap.forEach(doc => depts.push({ id: doc.id, ...doc.data() } as Department));
-        setDepartments(sortDepartmentsAlphabetically(depts));
-
-        // Load Batches
-        const batchSnap = await getDocs(collection(db, 'batches'));
-        const bList: Batch[] = [];
-        batchSnap.forEach(doc => bList.push({ id: doc.id, ...doc.data() } as Batch));
-        setBatches(bList);
-
-        // Load Semesters
-        const semSnap = await getDocs(collection(db, 'semesters'));
-        const sList: Semester[] = [];
-        semSnap.forEach(doc => sList.push({ id: doc.id, ...doc.data() } as Semester));
-        setSemesters(sortSemestersDescending(sList));
-
-        // Load Questions
-        const qSnap = await getDocs(collection(db, 'questions'));
-        const qList: QuestionPaper[] = [];
-        qSnap.forEach(doc => qList.push({ id: doc.id, ...doc.data() } as QuestionPaper));
-        setQuestions(qList);
-
-        // Load Users
-        const userSnap = await getDocs(collection(db, 'users'));
-        const uList: UserProfile[] = [];
-        userSnap.forEach(doc => uList.push({ uid: doc.id, ...doc.data() } as any as UserProfile));
-        setUsers(uList);
-
-        // Load Reports
-        const reportSnap = await getDocs(collection(db, 'reports'));
-        const rList: Report[] = [];
-        reportSnap.forEach(doc => rList.push({ id: doc.id, ...doc.data() } as Report));
-        setReports(rList);
-
-        // Load Faculties
-        const facSnap = await getDocs(collection(db, 'faculties'));
-        const facList: Faculty[] = [];
-        facSnap.forEach(doc => facList.push({ id: doc.id, ...doc.data() } as Faculty));
-        setFaculties(facList);
-
-        // Load Audit Logs
-        try {
-          const auditSnap = await getDocs(collection(db, 'audit_logs'));
-          const logList: AuditLog[] = [];
-          auditSnap.forEach(doc => logList.push({ id: doc.id, ...doc.data() } as AuditLog));
-          logList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-          setAuditLogs(logList);
-        } catch (auditErr) {
-          console.warn('Audit logs load warning:', auditErr);
-        }
-      } catch (err: any) {
-        console.error('Error fetching admin data:', err);
-        showNotif('error', 'Failed to retrieve data.');
-      } finally {
-        setLoading(false);
+    let initialCount = 0;
+    const markLoaded = () => {
+      initialCount++;
+      if (initialCount >= 4) {
+        setInitialLoading(false);
       }
-    }
-    fetchAdminData();
-  }, [refreshTrigger]);
+    };
+
+    // 1. Departments Listener
+    const unsubDepts = onSnapshot(collection(db, 'departments'), (snap) => {
+      const depts: Department[] = [];
+      snap.forEach(doc => depts.push({ id: doc.id, ...doc.data() } as Department));
+      setDepartments(sortDepartmentsAlphabetically(depts));
+      markLoaded();
+    }, (err) => {
+      console.error('Error in departments listener:', err);
+      markLoaded();
+    });
+
+    // 2. Batches Listener
+    const unsubBatches = onSnapshot(collection(db, 'batches'), (snap) => {
+      const bList: Batch[] = [];
+      snap.forEach(doc => bList.push({ id: doc.id, ...doc.data() } as Batch));
+      setBatches(bList);
+      markLoaded();
+    }, (err) => {
+      console.error('Error in batches listener:', err);
+      markLoaded();
+    });
+
+    // 3. Semesters Listener
+    const unsubSemesters = onSnapshot(collection(db, 'semesters'), (snap) => {
+      const sList: Semester[] = [];
+      snap.forEach(doc => sList.push({ id: doc.id, ...doc.data() } as Semester));
+      setSemesters(sortSemestersDescending(sList));
+      markLoaded();
+    }, (err) => {
+      console.error('Error in semesters listener:', err);
+      markLoaded();
+    });
+
+    // 4. Questions Listener
+    const unsubQuestions = onSnapshot(collection(db, 'questions'), (snap) => {
+      const qList: QuestionPaper[] = [];
+      snap.forEach(doc => qList.push({ id: doc.id, ...doc.data() } as QuestionPaper));
+      setQuestions(qList);
+      markLoaded();
+    }, (err) => {
+      console.error('Error in questions listener:', err);
+      markLoaded();
+    });
+
+    // 5. Users Listener
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
+      const uList: UserProfile[] = [];
+      snap.forEach(doc => uList.push({ uid: doc.id, ...doc.data() } as any as UserProfile));
+      setUsers(uList);
+    }, (err) => {
+      console.error('Error in users listener:', err);
+    });
+
+    // 6. Reports Listener
+    const unsubReports = onSnapshot(collection(db, 'reports'), (snap) => {
+      const rList: Report[] = [];
+      snap.forEach(doc => rList.push({ id: doc.id, ...doc.data() } as Report));
+      setReports(rList);
+    }, (err) => {
+      console.error('Error in reports listener:', err);
+    });
+
+    // 7. Faculties Listener
+    const unsubFaculties = onSnapshot(collection(db, 'faculties'), (snap) => {
+      const facList: Faculty[] = [];
+      snap.forEach(doc => facList.push({ id: doc.id, ...doc.data() } as Faculty));
+      setFaculties(facList);
+    }, (err) => {
+      console.error('Error in faculties listener:', err);
+    });
+
+    // 8. Audit Logs Listener
+    const unsubAudit = onSnapshot(collection(db, 'audit_logs'), (snap) => {
+      const logList: AuditLog[] = [];
+      snap.forEach(doc => logList.push({ id: doc.id, ...doc.data() } as AuditLog));
+      logList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      setAuditLogs(logList);
+    }, (err) => {
+      console.warn('Error in audit logs listener:', err);
+    });
+
+    return () => {
+      unsubDepts();
+      unsubBatches();
+      unsubSemesters();
+      unsubQuestions();
+      unsubUsers();
+      unsubReports();
+      unsubFaculties();
+      unsubAudit();
+    };
+  }, []);
 
   function showNotif(type: 'success' | 'error', message: string) {
     setNotification({ type, message });
@@ -206,36 +273,52 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
 
   async function handleCreateDepartment(e: React.FormEvent) {
     e.preventDefault();
-    if (!newDeptName || !newDeptCode) {
+    if (!newDeptName.trim() || !newDeptCode.trim()) {
       showNotif('error', 'Department name and code are required.');
       return;
     }
+    const name = newDeptName.trim();
+    const code = newDeptCode.trim().toUpperCase();
+    const tempId = `temp_d_${Date.now()}`;
+    const newDept: Department = {
+      id: tempId,
+      name,
+      code,
+      createdAt: new Date().toISOString()
+    };
+
+    // 1. Instant optimistic local state update
+    setDepartments(prev => sortDepartmentsAlphabetically([...prev.filter(d => d.id !== tempId), newDept]));
+    setNewDeptName('');
+    setNewDeptCode('');
+    showNotif('success', `Department "${name}" created.`);
+
     try {
       const docRef = await addDoc(collection(db, 'departments'), {
-        name: newDeptName.trim(),
-        code: newDeptCode.trim().toUpperCase(),
-        createdAt: new Date().toISOString()
+        name,
+        code,
+        createdAt: newDept.createdAt
       });
 
-      await recordAuditLog({
+      // Seamlessly map temp ID to Firestore document ID
+      setDepartments(prev => prev.map(d => d.id === tempId ? { ...d, id: docRef.id } : d));
+
+      // Asynchronous non-blocking audit logging
+      recordAuditLog({
         category: 'Hierarchy',
         action: 'CREATE_DEPARTMENT',
-        details: `Created new department "${newDeptName.trim()}" (${newDeptCode.trim().toUpperCase()})`,
+        details: `Created new department "${name}" (${code})`,
         targetId: docRef.id,
-        targetName: newDeptName.trim(),
+        targetName: name,
         performedByUid: currentUser?.uid,
         performedByName: currentUser?.username || 'Admin',
         performedByEmail: currentUser?.email,
         performedByRole: currentUser?.role || 'Admin',
-        metadata: { code: newDeptCode.trim().toUpperCase() }
-      });
-
-      setNewDeptName('');
-      setNewDeptCode('');
-      setRefreshTrigger(prev => prev + 1);
-      showNotif('success', 'Department created successfully!');
+        metadata: { code }
+      }).catch(console.warn);
     } catch (err: any) {
-      showNotif('error', err.message);
+      setDepartments(prev => prev.filter(d => d.id !== tempId));
+      showNotif('error', err.message || 'Failed to create department');
     }
   }
 
@@ -247,10 +330,15 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       message: 'Are you sure you want to delete this department? All associated papers/batches will remain but lose parent context.',
       confirmText: 'Delete Department',
       onConfirm: async () => {
+        // Immediately close dialog so UI never freezes
+        setConfirmDialog(null);
+        // Instant optimistic removal
+        setDepartments(prev => prev.filter(d => d.id !== deptId));
+        showNotif('success', 'Department deleted.');
+
         try {
           await deleteDoc(doc(db, 'departments', deptId));
-
-          await recordAuditLog({
+          recordAuditLog({
             category: 'Hierarchy',
             action: 'DELETE_DEPARTMENT',
             details: `Deleted department "${targetDept?.name || deptId}"`,
@@ -260,50 +348,61 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
             performedByName: currentUser?.username || 'Admin',
             performedByEmail: currentUser?.email,
             performedByRole: currentUser?.role || 'Admin'
-          });
-
-          setRefreshTrigger(prev => prev + 1);
-          showNotif('success', 'Department deleted.');
+          }).catch(console.warn);
         } catch (err: any) {
-          showNotif('error', err.message);
+          if (targetDept) setDepartments(prev => sortDepartmentsAlphabetically([...prev, targetDept]));
+          showNotif('error', err.message || 'Failed to delete department');
         }
-        setConfirmDialog(null);
       }
     });
   }
 
   async function handleCreateBatch(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedDeptId || !newBatchName) {
+    if (!selectedDeptId || !newBatchName.trim()) {
       showNotif('error', 'Please select a department and enter batch name.');
       return;
     }
-    const targetDept = departments.find(d => d.id === selectedDeptId);
+    const name = newBatchName.trim();
+    const deptId = selectedDeptId;
+    const tempId = `temp_b_${Date.now()}`;
+    const newBatch: Batch = {
+      id: tempId,
+      departmentId: deptId,
+      name,
+      createdAt: new Date().toISOString()
+    };
+
+    // Instant optimistic addition
+    setBatches(prev => [...prev.filter(b => b.id !== tempId), newBatch]);
+    setNewBatchName('');
+    showNotif('success', `Batch "${name}" created.`);
+
+    const targetDept = departments.find(d => d.id === deptId);
     try {
       const docRef = await addDoc(collection(db, 'batches'), {
-        departmentId: selectedDeptId,
-        name: newBatchName.trim(),
-        createdAt: new Date().toISOString()
+        departmentId: deptId,
+        name,
+        createdAt: newBatch.createdAt
       });
 
-      await recordAuditLog({
+      setBatches(prev => prev.map(b => b.id === tempId ? { ...b, id: docRef.id } : b));
+
+      recordAuditLog({
         category: 'Hierarchy',
         action: 'CREATE_BATCH',
-        details: `Created batch "${newBatchName.trim()}" for department "${targetDept?.name || selectedDeptId}"`,
+        details: `Created batch "${name}" for department "${targetDept?.name || deptId}"`,
         targetId: docRef.id,
-        targetName: newBatchName.trim(),
+        targetName: name,
         performedByUid: currentUser?.uid,
         performedByName: currentUser?.username || 'Admin',
         performedByEmail: currentUser?.email,
         performedByRole: currentUser?.role || 'Admin',
-        metadata: { departmentId: selectedDeptId, departmentName: targetDept?.name }
-      });
-
-      setNewBatchName('');
-      setRefreshTrigger(prev => prev + 1);
-      showNotif('success', 'Batch created successfully!');
+        metadata: { departmentId: deptId, departmentName: targetDept?.name }
+      }).catch(console.warn);
     } catch (err: any) {
-      showNotif('error', err.message);
+      setBatches(prev => prev.filter(b => b.id !== tempId));
+      showNotif('error', err.message || 'Failed to create batch');
     }
   }
 
@@ -315,10 +414,14 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       message: 'Are you sure you want to delete this batch?',
       confirmText: 'Delete Batch',
       onConfirm: async () => {
+        setConfirmDialog(null);
+        // Instant optimistic update
+        setBatches(prev => prev.filter(b => b.id !== batchId));
+        showNotif('success', 'Batch deleted.');
+
         try {
           await deleteDoc(doc(db, 'batches', batchId));
-
-          await recordAuditLog({
+          recordAuditLog({
             category: 'Hierarchy',
             action: 'DELETE_BATCH',
             details: `Deleted batch "${targetBatch?.name || batchId}"`,
@@ -328,14 +431,11 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
             performedByName: currentUser?.username || 'Admin',
             performedByEmail: currentUser?.email,
             performedByRole: currentUser?.role || 'Admin'
-          });
-
-          setRefreshTrigger(prev => prev + 1);
-          showNotif('success', 'Batch deleted.');
+          }).catch(console.warn);
         } catch (err: any) {
-          showNotif('error', err.message);
+          if (targetBatch) setBatches(prev => [...prev, targetBatch]);
+          showNotif('error', err.message || 'Failed to delete batch');
         }
-        setConfirmDialog(null);
       }
     });
   }
@@ -345,7 +445,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     if (!trimmed) return;
     
     // Extract default options & existing unique options
-    const uniqueSemesterNames = Array.from(new Set(semesters.map(s => s.name.trim()))).filter(Boolean);
+    const uniqueSemesterNames = Array.from(new Set(semesters.map(s => (s?.name || '').trim()))).filter(Boolean);
     const defaultSemesterNames = [
       '1st Semester', '2nd Semester', '3rd Semester', '4th Semester',
       '5th Semester', '6th Semester', '7th Semester', '8th Semester',
@@ -383,13 +483,27 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     }
 
     const targetBatch = batches.find(b => b.id === selectedBatchId);
-    setLoading(true);
+    const toAssign = [...checkedSemesterNames];
+    setIsAssigningSemesters(true);
+
+    // Instant optimistic update for all checked semesters
+    const optimisticSems: Semester[] = toAssign.map((semName, i) => ({
+      id: `temp_sem_${Date.now()}_${i}`,
+      batchId: selectedBatchId,
+      name: semName.trim(),
+      createdAt: new Date().toISOString()
+    }));
+
+    setSemesters(prev => sortSemestersDescending([...prev, ...optimisticSems]));
+    setCheckedSemesterNames([]);
+    setCustomSemesterName('');
+    showNotif('success', `Assigned ${toAssign.length} semester(s) to ${targetBatch?.name || 'batch'}!`);
+
     try {
       let addedCount = 0;
-      for (const semName of checkedSemesterNames) {
+      for (const semName of toAssign) {
         const formattedName = semName.trim();
-        // Double check if already exists to prevent duplicates
-        const exists = semesters.some(s => s.batchId === selectedBatchId && s.name.toLowerCase() === formattedName.toLowerCase());
+        const exists = semesters.some(s => s.batchId === selectedBatchId && (s?.name || '').toLowerCase() === formattedName.toLowerCase());
         if (!exists) {
           await addDoc(collection(db, 'semesters'), {
             batchId: selectedBatchId,
@@ -400,27 +514,24 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
         }
       }
 
-      await recordAuditLog({
+      recordAuditLog({
         category: 'Hierarchy',
         action: 'ASSIGN_SEMESTERS',
-        details: `Assigned ${addedCount} semester(s) [${checkedSemesterNames.join(', ')}] to batch "${targetBatch?.name || selectedBatchId}"`,
+        details: `Assigned ${addedCount} semester(s) [${toAssign.join(', ')}] to batch "${targetBatch?.name || selectedBatchId}"`,
         targetId: selectedBatchId,
         targetName: targetBatch?.name || selectedBatchId,
         performedByUid: currentUser?.uid,
         performedByName: currentUser?.username || 'Admin',
         performedByEmail: currentUser?.email,
         performedByRole: currentUser?.role || 'Admin',
-        metadata: { addedCount, semesters: checkedSemesterNames }
-      });
-      
-      setCheckedSemesterNames([]);
-      setCustomSemesterName('');
-      setRefreshTrigger(prev => prev + 1);
-      showNotif('success', `Successfully assigned ${addedCount} semester(s) to the batch!`);
+        metadata: { addedCount, semesters: toAssign }
+      }).catch(console.warn);
     } catch (err: any) {
-      showNotif('error', err.message);
+      // Revert temporary items on failure
+      setSemesters(prev => prev.filter(s => !s.id.startsWith('temp_sem_')));
+      showNotif('error', err.message || 'Failed to assign semesters');
     } finally {
-      setLoading(false);
+      setIsAssigningSemesters(false);
     }
   }
 
@@ -432,10 +543,14 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       message: 'Are you sure you want to delete this semester folder?',
       confirmText: 'Delete Semester',
       onConfirm: async () => {
+        setConfirmDialog(null);
+        // Instant optimistic update
+        setSemesters(prev => prev.filter(s => s.id !== semId));
+        showNotif('success', 'Semester deleted.');
+
         try {
           await deleteDoc(doc(db, 'semesters', semId));
-
-          await recordAuditLog({
+          recordAuditLog({
             category: 'Hierarchy',
             action: 'DELETE_SEMESTER',
             details: `Deleted semester folder "${targetSem?.name || semId}"`,
@@ -445,14 +560,11 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
             performedByName: currentUser?.username || 'Admin',
             performedByEmail: currentUser?.email,
             performedByRole: currentUser?.role || 'Admin'
-          });
-
-          setRefreshTrigger(prev => prev + 1);
-          showNotif('success', 'Semester deleted.');
+          }).catch(console.warn);
         } catch (err: any) {
-          showNotif('error', err.message);
+          if (targetSem) setSemesters(prev => sortSemestersDescending([...prev, targetSem]));
+          showNotif('error', err.message || 'Failed to delete semester');
         }
-        setConfirmDialog(null);
       }
     });
   }
@@ -467,13 +579,18 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       message: 'Delete this question paper permanently? All uploaded images will also be automatically removed from ImgBB.',
       confirmText: 'Delete Paper & Images',
       onConfirm: async () => {
+        setConfirmDialog(null);
+        // Instant optimistic update
+        setQuestions(prev => prev.filter(q => q.id !== id));
+        showNotif('success', 'Question paper deleted.');
+
         try {
           const res = await deleteQuestionWithImages(targetQuestion || { id });
           if (!res.success) {
-            throw new Error(res.error || 'Failed to delete question paper.');
+            console.warn('Delete warning:', res.error);
           }
 
-          await recordAuditLog({
+          recordAuditLog({
             category: 'Papers',
             action: 'DELETE_PAPER',
             details: `Permanently deleted question paper "${targetQuestion?.courseName || 'Unknown'}" (${targetQuestion?.courseCode || id}) with ${targetQuestion?.images?.length || 0} images`,
@@ -483,14 +600,11 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
             performedByName: currentUser?.username || 'Admin',
             performedByEmail: currentUser?.email,
             performedByRole: currentUser?.role || 'Admin'
-          });
-
-          setRefreshTrigger(prev => prev + 1);
-          showNotif('success', 'Question paper and ImgBB images deleted successfully.');
+          }).catch(console.warn);
         } catch (err: any) {
-          showNotif('error', err.message);
+          if (targetQuestion) setQuestions(prev => [...prev, targetQuestion]);
+          showNotif('error', err.message || 'Failed to delete question paper');
         }
-        setConfirmDialog(null);
       }
     });
   }
@@ -499,10 +613,13 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
 
   async function handleDismissReport(reportId: string) {
     const targetReport = reports.find(r => r.id === reportId);
+    // Instant optimistic update
+    setReports(prev => prev.filter(r => r.id !== reportId));
+    showNotif('success', 'Report dismissed.');
+
     try {
       await deleteDoc(doc(db, 'reports', reportId));
-
-      await recordAuditLog({
+      recordAuditLog({
         category: 'Reports',
         action: 'DISMISS_REPORT',
         details: `Dismissed user report on question paper ID: ${targetReport?.questionId || 'Unknown'} (Reason: ${targetReport?.reason || 'N/A'})`,
@@ -512,12 +629,10 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
         performedByName: currentUser?.username || 'Moderator',
         performedByEmail: currentUser?.email,
         performedByRole: currentUser?.role || 'Moderator'
-      });
-
-      setRefreshTrigger(prev => prev + 1);
-      showNotif('success', 'Report dismissed.');
+      }).catch(console.warn);
     } catch (err: any) {
-      showNotif('error', err.message);
+      if (targetReport) setReports(prev => [...prev, targetReport]);
+      showNotif('error', err.message || 'Failed to dismiss report');
     }
   }
 
@@ -530,14 +645,20 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       message: 'Resolve report by deleting the question paper permanently? All uploaded images will also be deleted from ImgBB.',
       confirmText: 'Resolve & Delete',
       onConfirm: async () => {
+        setConfirmDialog(null);
+        // Instant optimistic update
+        setQuestions(prev => prev.filter(q => q.id !== questionId));
+        setReports(prev => prev.filter(r => r.id !== reportId));
+        showNotif('success', 'Report resolved: Question paper and images deleted.');
+
         try {
           const res = await deleteQuestionWithImages(targetQuestion || { id: questionId });
           if (!res.success) {
-            throw new Error(res.error || 'Failed to delete question paper.');
+            console.warn('Resolve error:', res.error);
           }
           await deleteDoc(doc(db, 'reports', reportId));
 
-          await recordAuditLog({
+          recordAuditLog({
             category: 'Reports',
             action: 'RESOLVE_REPORT_DELETE',
             details: `Resolved report by permanently deleting question paper "${targetQuestion?.courseName || questionId}" (Reported reason: ${targetReport?.reason || 'N/A'})`,
@@ -547,14 +668,12 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
             performedByName: currentUser?.username || 'Moderator',
             performedByEmail: currentUser?.email,
             performedByRole: currentUser?.role || 'Moderator'
-          });
-
-          setRefreshTrigger(prev => prev + 1);
-          showNotif('success', 'Report resolved: Question paper and ImgBB images deleted.');
+          }).catch(console.warn);
         } catch (err: any) {
-          showNotif('error', err.message);
+          if (targetQuestion) setQuestions(prev => [...prev, targetQuestion]);
+          if (targetReport) setReports(prev => [...prev, targetReport]);
+          showNotif('error', err.message || 'Failed to resolve report');
         }
-        setConfirmDialog(null);
       }
     });
   }
@@ -570,12 +689,17 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       message: `Are you sure you want to ${action} this user?`,
       confirmText: `${action} User`,
       onConfirm: async () => {
+        setConfirmDialog(null);
+        // Instant optimistic update
+        setUsers(prev => prev.map(u => u.uid === userId ? { ...u, status: isCurrentlyBanned ? 'active' : 'banned' } : u));
+        showNotif('success', `User ${isCurrentlyBanned ? 'unbanned' : 'banned'} successfully.`);
+
         try {
           await updateDoc(doc(db, 'users', userId), {
             status: isCurrentlyBanned ? 'active' : 'banned'
           });
 
-          await recordAuditLog({
+          recordAuditLog({
             category: 'Users',
             action: isCurrentlyBanned ? 'UNBAN_USER' : 'BAN_USER',
             details: `${isCurrentlyBanned ? 'Unbanned' : 'Banned'} user account "${targetUser?.username || 'User'}" (${targetUser?.email || userId})`,
@@ -585,20 +709,17 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
             performedByName: currentUser?.username || 'Admin',
             performedByEmail: currentUser?.email,
             performedByRole: currentUser?.role || 'Admin'
-          });
-
-          setRefreshTrigger(prev => prev + 1);
-          showNotif('success', `User ${isCurrentlyBanned ? 'unbanned' : 'banned'} successfully.`);
+          }).catch(console.warn);
         } catch (err: any) {
-          showNotif('error', err.message);
+          if (targetUser) setUsers(prev => prev.map(u => u.uid === userId ? targetUser : u));
+          showNotif('error', err.message || `Failed to ${action.toLowerCase()} user`);
         }
-        setConfirmDialog(null);
       }
     });
   }
 
   async function handleChangeUserRole(userId: string, newRole: 'super_admin' | 'moderator' | 'user') {
-    if (userId === currentUser.uid) {
+    if (userId === currentUser?.uid) {
       showNotif('error', 'You cannot change your own role.');
       return;
     }
@@ -610,12 +731,17 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       message: `Are you sure you want to change this user's role to ${roleLabel}?`,
       confirmText: 'Update Role',
       onConfirm: async () => {
+        setConfirmDialog(null);
+        // Instant optimistic update
+        setUsers(prev => prev.map(u => u.uid === userId ? { ...u, role: newRole } : u));
+        showNotif('success', `User role updated to ${roleLabel} successfully.`);
+
         try {
           await updateDoc(doc(db, 'users', userId), {
             role: newRole
           });
 
-          await recordAuditLog({
+          recordAuditLog({
             category: 'Users',
             action: 'CHANGE_USER_ROLE',
             details: `Changed role of user "${targetUser?.username || 'User'}" (${targetUser?.email || userId}) to ${roleLabel}`,
@@ -626,16 +752,51 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
             performedByEmail: currentUser?.email,
             performedByRole: currentUser?.role || 'Super Admin',
             metadata: { previousRole: targetUser?.role, newRole }
-          });
-
-          setRefreshTrigger(prev => prev + 1);
-          showNotif('success', `User role updated to ${roleLabel} successfully.`);
+          }).catch(console.warn);
         } catch (err: any) {
-          showNotif('error', err.message);
+          if (targetUser) setUsers(prev => prev.map(u => u.uid === userId ? targetUser : u));
+          showNotif('error', err.message || 'Failed to update user role');
         }
-        setConfirmDialog(null);
       }
     });
+  }
+
+  async function handleDirectFacultyPhotoUpload(file: File, isEdit: boolean = false) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showNotif('error', 'Please select a valid image file (JPG, PNG, WebP).');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      showNotif('error', 'Image size must be under 10MB.');
+      return;
+    }
+
+    if (isEdit) {
+      setIsUploadingEditPhoto(true);
+    } else {
+      setIsUploadingPhoto(true);
+    }
+
+    try {
+      showNotif('success', 'Uploading faculty photo directly...');
+      const uploadedUrl = await uploadSingleImageToImgBB(file);
+      if (isEdit) {
+        setEditFacultyImgUrl(uploadedUrl);
+      } else {
+        setNewFacultyImgUrl(uploadedUrl);
+      }
+      showNotif('success', 'Faculty photo uploaded successfully!');
+    } catch (err: any) {
+      console.error('Failed to upload faculty photo:', err);
+      showNotif('error', err?.message || 'Failed to upload photo. You can also paste an image URL.');
+    } finally {
+      if (isEdit) {
+        setIsUploadingEditPhoto(false);
+      } else {
+        setIsUploadingPhoto(false);
+      }
+    }
   }
 
   async function handleAddFaculty(e: React.FormEvent) {
@@ -644,48 +805,54 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       showNotif('error', 'Please fill out all fields.');
       return;
     }
-    setLoading(true);
+    const tempId = `temp_f_${Date.now()}`;
+    const docData: any = {
+      name: newFacultyName.trim(),
+      designation: newFacultyDesignation.trim(),
+      departmentId: newFacultyDeptId,
+      createdAt: new Date().toISOString(),
+      totalRatingSum: 0,
+      totalRatingCount: 0,
+      averageRating: 0
+    };
+    if (newFacultyImgUrl.trim()) docData.imageUrl = newFacultyImgUrl.trim();
+    if (newFacultyPhone.trim()) docData.phone = newFacultyPhone.trim();
+    if (newFacultyEmail.trim()) docData.email = newFacultyEmail.trim();
+
+    // Instant optimistic addition
+    setFaculties(prev => [...prev.filter(f => f.id !== tempId), { id: tempId, ...docData }]);
+    const savedName = newFacultyName.trim();
+    const savedDesig = newFacultyDesignation.trim();
+    setNewFacultyName('');
+    setNewFacultyDesignation('');
+    setNewFacultyDeptId('');
+    setNewFacultyImgUrl('');
+    setNewFacultyPhone('');
+    setNewFacultyEmail('');
+    showNotif('success', `Faculty member "${savedName}" added successfully!`);
+
+    setIsAddingFaculty(true);
     try {
-      const docData: any = {
-        name: newFacultyName.trim(),
-        designation: newFacultyDesignation.trim(),
-        departmentId: newFacultyDeptId,
-        createdAt: new Date().toISOString(),
-        totalRatingSum: 0,
-        totalRatingCount: 0,
-        averageRating: 0
-      };
-      if (newFacultyImgUrl.trim()) docData.imageUrl = newFacultyImgUrl.trim();
-      if (newFacultyPhone.trim()) docData.phone = newFacultyPhone.trim();
-      if (newFacultyEmail.trim()) docData.email = newFacultyEmail.trim();
-
       const docRef = await addDoc(collection(db, 'faculties'), docData);
+      setFaculties(prev => prev.map(f => f.id === tempId ? { ...f, id: docRef.id } : f));
 
-      await recordAuditLog({
+      recordAuditLog({
         category: 'Faculty',
         action: 'CREATE_FACULTY',
-        details: `Added new faculty member "${newFacultyName.trim()}" (${newFacultyDesignation.trim()})`,
+        details: `Added new faculty member "${savedName}" (${savedDesig})`,
         targetId: docRef.id,
-        targetName: newFacultyName.trim(),
+        targetName: savedName,
         performedByUid: currentUser?.uid,
         performedByName: currentUser?.username || 'Admin',
         performedByEmail: currentUser?.email,
         performedByRole: currentUser?.role || 'Admin'
-      });
-
-      showNotif('success', `Faculty member "${newFacultyName}" successfully added!`);
-      setNewFacultyName('');
-      setNewFacultyDesignation('');
-      setNewFacultyDeptId('');
-      setNewFacultyImgUrl('');
-      setNewFacultyPhone('');
-      setNewFacultyEmail('');
-      setRefreshTrigger(prev => prev + 1);
+      }).catch(console.warn);
     } catch (err: any) {
       console.error(err);
+      setFaculties(prev => prev.filter(f => f.id !== tempId));
       showNotif('error', 'Failed to add faculty member.');
     } finally {
-      setLoading(false);
+      setIsAddingFaculty(false);
     }
   }
 
@@ -696,39 +863,43 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       showNotif('error', 'Please fill out all required fields.');
       return;
     }
-    setLoading(true);
+    const facultyId = editingFaculty.id;
+    const previousFaculty = editingFaculty;
+    const updatedData: any = {
+      name: editFacultyName.trim(),
+      designation: editFacultyDesignation.trim(),
+      departmentId: editFacultyDeptId,
+      imageUrl: editFacultyImgUrl.trim() || '',
+      phone: editFacultyPhone.trim() || '',
+      email: editFacultyEmail.trim() || '',
+    };
+
+    // Instant optimistic update & close edit form
+    setFaculties(prev => prev.map(f => f.id === facultyId ? { ...f, ...updatedData } : f));
+    setEditingFaculty(null);
+    showNotif('success', `Faculty member "${updatedData.name}" updated!`);
+
+    setIsUpdatingFaculty(true);
     try {
-      const updatedData: any = {
-        name: editFacultyName.trim(),
-        designation: editFacultyDesignation.trim(),
-        departmentId: editFacultyDeptId,
-      };
-      updatedData.imageUrl = editFacultyImgUrl.trim() || '';
-      updatedData.phone = editFacultyPhone.trim() || '';
-      updatedData.email = editFacultyEmail.trim() || '';
+      await updateDoc(doc(db, 'faculties', facultyId), updatedData);
 
-      await updateDoc(doc(db, 'faculties', editingFaculty.id), updatedData);
-
-      await recordAuditLog({
+      recordAuditLog({
         category: 'Faculty',
         action: 'UPDATE_FACULTY',
-        details: `Updated faculty member profile "${editFacultyName.trim()}"`,
-        targetId: editingFaculty.id,
-        targetName: editFacultyName.trim(),
+        details: `Updated faculty member profile "${updatedData.name}"`,
+        targetId: facultyId,
+        targetName: updatedData.name,
         performedByUid: currentUser?.uid,
         performedByName: currentUser?.username || 'Admin',
         performedByEmail: currentUser?.email,
         performedByRole: currentUser?.role || 'Admin'
-      });
-
-      showNotif('success', `Faculty member "${editFacultyName}" successfully updated!`);
-      setEditingFaculty(null);
-      setRefreshTrigger(prev => prev + 1);
+      }).catch(console.warn);
     } catch (err: any) {
       console.error(err);
+      setFaculties(prev => prev.map(f => f.id === facultyId ? previousFaculty : f));
       showNotif('error', 'Failed to update faculty member: ' + err.message);
     } finally {
-      setLoading(false);
+      setIsUpdatingFaculty(false);
     }
   }
 
@@ -743,17 +914,21 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
   }
 
   async function handleDeleteFaculty(facultyId: string, name: string) {
+    const targetFaculty = faculties.find(f => f.id === facultyId);
     setConfirmDialog({
       isOpen: true,
       title: 'Delete Faculty Member',
       message: `Are you sure you want to delete "${name}"? This action is permanent.`,
       confirmText: 'Delete Member',
       onConfirm: async () => {
-        setLoading(true);
+        setConfirmDialog(null);
+        // Instant optimistic update
+        setFaculties(prev => prev.filter(f => f.id !== facultyId));
+        showNotif('success', `Faculty member "${name}" deleted.`);
+
         try {
           await deleteDoc(doc(db, 'faculties', facultyId));
-
-          await recordAuditLog({
+          recordAuditLog({
             category: 'Faculty',
             action: 'DELETE_FACULTY',
             details: `Deleted faculty member "${name}"`,
@@ -763,31 +938,39 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
             performedByName: currentUser?.username || 'Admin',
             performedByEmail: currentUser?.email,
             performedByRole: currentUser?.role || 'Admin'
-          });
-
-          showNotif('success', `Faculty member "${name}" deleted.`);
-          setRefreshTrigger(prev => prev + 1);
+          }).catch(console.warn);
         } catch (err: any) {
-          showNotif('error', err.message);
-        } finally {
-          setLoading(false);
+          if (targetFaculty) setFaculties(prev => [...prev, targetFaculty]);
+          showNotif('error', err.message || 'Failed to delete faculty member');
         }
-        setConfirmDialog(null);
       }
     });
   }
 
   async function handleVerifyQuestion(questionId: string, action: 'published' | 'rejected', feedback: string = '') {
     const targetQ = questions.find(q => q.id === questionId);
+    setVerifyingPaperId(questionId);
+
+    // Instant optimistic in-memory update so cards/badges/counts reflect in 0ms
+    setQuestions(prev => prev.map(q => q.id === questionId ? {
+      ...q,
+      status: action,
+      verifiedByUID: currentUser?.uid,
+      verifiedByUsername: currentUser?.username || 'Moderator',
+      verificationFeedback: feedback.trim()
+    } : q));
+
+    showNotif('success', `Question paper ${action === 'published' ? 'approved & published' : 'rejected'} successfully.`);
+
     try {
       await updateDoc(doc(db, 'questions', questionId), {
         status: action,
-        verifiedByUID: currentUser.uid,
-        verifiedByUsername: currentUser.username || 'Moderator',
+        verifiedByUID: currentUser?.uid,
+        verifiedByUsername: currentUser?.username || 'Moderator',
         verificationFeedback: feedback.trim()
       });
 
-      await recordAuditLog({
+      recordAuditLog({
         category: 'Papers',
         action: action === 'published' ? 'APPROVE_PAPER' : 'REJECT_PAPER',
         details: `${action === 'published' ? 'Approved & published' : 'Rejected'} question paper "${targetQ?.courseName || questionId}" (${targetQ?.courseCode || ''})${feedback.trim() ? ` with feedback: "${feedback.trim()}"` : ''}`,
@@ -798,12 +981,12 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
         performedByEmail: currentUser?.email,
         performedByRole: currentUser?.role || 'Moderator',
         metadata: { feedback: feedback.trim() }
-      });
-
-      setRefreshTrigger(prev => prev + 1);
-      showNotif('success', `Question paper ${action === 'published' ? 'approved & published' : 'rejected'} successfully.`);
+      }).catch(console.warn);
     } catch (err: any) {
-      showNotif('error', err.message);
+      if (targetQ) setQuestions(prev => prev.map(q => q.id === questionId ? targetQ : q));
+      showNotif('error', err.message || 'Failed to update verification status');
+    } finally {
+      setVerifyingPaperId(null);
     }
   }
 
@@ -819,17 +1002,22 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       inputLabel: 'Feedback Notes',
       inputPlaceholder: 'e.g. Approved: highly legible, complete. Or Rejected: bad quality...',
       onConfirm: async (text) => {
-        await handleVerifyQuestion(questionId, action, text || '');
         setConfirmDialog(null);
+        await handleVerifyQuestion(questionId, action, text || '');
       }
     });
   }
 
   // Filtering users / questions
   const filteredQuestions = questions.filter(q => {
-    const matchesSearch = q.courseName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      q.courseCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (q.teacher && q.teacher.toLowerCase().includes(searchQuery.toLowerCase()));
+    const qCourseName = (q.courseName || '').toLowerCase();
+    const qCourseCode = (q.courseCode || '').toLowerCase();
+    const qTeacher = (q.teacher || '').toLowerCase();
+    const qSearch = (searchQuery || '').toLowerCase();
+
+    const matchesSearch = qCourseName.includes(qSearch) ||
+      qCourseCode.includes(qSearch) ||
+      qTeacher.includes(qSearch);
 
     if (!matchesSearch) return false;
 
@@ -841,13 +1029,15 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     return true;
   });
 
-  const filteredUsers = users.filter(u => 
-    u.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    u.email.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredUsers = users.filter(u => {
+    const uName = (u.username || '').toLowerCase();
+    const uEmail = (u.email || '').toLowerCase();
+    const qSearch = (searchQuery || '').toLowerCase();
+    return uName.includes(qSearch) || uEmail.includes(qSearch);
+  });
 
   // Extract unique existing semester names and provide common academic options as defaults
-  const uniqueSemesterNames = Array.from(new Set(semesters.map(s => s.name.trim()))).filter(Boolean);
+  const uniqueSemesterNames = Array.from(new Set(semesters.map(s => (s?.name || '').trim()))).filter(Boolean);
   const defaultSemesterNames = [
     '1st Semester', '2nd Semester', '3rd Semester', '4th Semester',
     '5th Semester', '6th Semester', '7th Semester', '8th Semester',
@@ -857,7 +1047,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
   ];
   const allSemesterOptions = Array.from(
     new Set([...uniqueSemesterNames, ...defaultSemesterNames, ...customOptionList])
-  ).sort(compareSemesterNames);
+  ).filter(Boolean).sort(compareSemesterNames);
 
   async function handleClearAllLogs() {
     setConfirmDialog({
@@ -866,17 +1056,15 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       message: 'Are you sure you want to permanently clear all audit log records? This action is irreversible.',
       confirmText: 'Clear All Logs',
       onConfirm: async () => {
-        setLoading(true);
         try {
+          // Optimistic update
+          setAuditLogs([]);
           const snap = await getDocs(collection(db, 'audit_logs'));
           const deletePromises = snap.docs.map((d) => deleteDoc(doc(db, 'audit_logs', d.id)));
           await Promise.all(deletePromises);
-          setAuditLogs([]);
           showNotif('success', 'Audit log records cleared.');
         } catch (err: any) {
           showNotif('error', err.message);
-        } finally {
-          setLoading(false);
         }
         setConfirmDialog(null);
       }
@@ -936,10 +1124,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
             <button
               id={`admin-tab-${tab.id}`}
               key={tab.id}
-              onClick={() => {
-                setActiveTab(tab.id as any);
-                setSearchQuery('');
-              }}
+              onClick={() => handleTabChange(tab.id as any)}
               className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-xl transition-all ${
                 isActive 
                   ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-950 shadow-md' 
@@ -963,15 +1148,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
         })}
       </div>
 
-      {loading && (
-        <div className="flex flex-col items-center justify-center py-20">
-          <Loader2 className="w-10 h-10 animate-spin text-indigo-600" />
-          <p className="text-sm text-slate-500 mt-2">Updating dashboard data...</p>
-        </div>
-      )}
-
-      {!loading && (
-        <div className="space-y-8 animate-fade-in">
+      <div className="space-y-8">
           
           {/* --- TAB: ANALYTICS --- */}
           {activeTab === 'analytics' && (
@@ -1312,10 +1489,10 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
                         <button
                           type="button"
                           onClick={handleCreateSemester}
-                          disabled={checkedSemesterNames.length === 0 || loading}
+                          disabled={checkedSemesterNames.length === 0 || isAssigningSemesters}
                           className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2.5 rounded-xl flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10 hover:shadow-indigo-600/20 active:scale-98 disabled:opacity-50 transition-all"
                         >
-                          {loading ? (
+                          {isAssigningSemesters ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
                           ) : (
                             <Plus className="w-4 h-4" />
@@ -1497,18 +1674,29 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
                           {q.status === 'pending' && (
                             <div className="inline-flex gap-1.5 mr-2">
                               <button
+                                disabled={verifyingPaperId === q.id}
                                 onClick={() => promptFeedbackAndVerify(q.id, 'published')}
-                                className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all inline-flex items-center gap-1 shadow-sm"
+                                className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition-all inline-flex items-center gap-1 shadow-sm"
                                 title="Approve and Publish Paper"
                               >
-                                <Check className="w-3.5 h-3.5" /> Approve
+                                {verifyingPaperId === q.id ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Check className="w-3.5 h-3.5" />
+                                )}
+                                <span>Approve</span>
                               </button>
                               <button
+                                disabled={verifyingPaperId === q.id}
                                 onClick={() => promptFeedbackAndVerify(q.id, 'rejected')}
-                                className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition-all inline-flex items-center gap-1 shadow-sm"
+                                className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition-all inline-flex items-center gap-1 shadow-sm"
                                 title="Reject and Hide Paper"
                               >
-                                Reject
+                                {verifyingPaperId === q.id ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <span>Reject</span>
+                                )}
                               </button>
                             </div>
                           )}
@@ -1814,15 +2002,129 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
                           </select>
                         </div>
 
-                        <div className="space-y-1.5">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Faculty Image URL <span className="text-slate-400 font-normal">(Optional)</span></label>
-                          <input
-                            type="url"
-                            value={editFacultyImgUrl}
-                            onChange={(e) => setEditFacultyImgUrl(e.target.value)}
-                            placeholder="e.g. https://example.com/photo.jpg"
-                            className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          />
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                              <Camera className="w-3.5 h-3.5 text-indigo-500" />
+                              <span>Faculty Photo</span>
+                              <span className="text-slate-400 font-normal lowercase">(optional)</span>
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => setShowEditManualUrlInput(!showEditManualUrlInput)}
+                              className="text-[10px] text-indigo-600 dark:text-indigo-400 hover:underline font-semibold cursor-pointer"
+                            >
+                              {showEditManualUrlInput ? 'Hide URL field' : 'Paste URL instead'}
+                            </button>
+                          </div>
+
+                          {/* Live Photo Preview when selected/uploaded */}
+                          {editFacultyImgUrl ? (
+                            <div className="p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl flex items-center justify-between gap-3 shadow-xs">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-12 h-12 rounded-xl overflow-hidden border-2 border-indigo-500/20 bg-slate-200 dark:bg-slate-800 shrink-0 shadow-xs">
+                                  <img
+                                    src={formatImageUrl(editFacultyImgUrl)}
+                                    alt="Faculty portrait preview"
+                                    onError={handleImageError}
+                                    className="w-full h-full object-cover"
+                                  />
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-xs font-bold text-slate-900 dark:text-white truncate">Photo Ready</p>
+                                  <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
+                                    <CheckCircle className="w-3 h-3" /> Ready
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <label
+                                  htmlFor="edit-faculty-direct-upload"
+                                  className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400 text-xs font-bold rounded-lg cursor-pointer transition-colors"
+                                >
+                                  Change
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditFacultyImgUrl('')}
+                                  className="p-1 hover:bg-red-50 dark:hover:bg-red-950/50 text-slate-400 hover:text-red-500 rounded-lg transition-colors cursor-pointer"
+                                  title="Remove photo"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
+                              <input
+                                id="edit-faculty-direct-upload"
+                                type="file"
+                                accept="image/*"
+                                onChange={(e) => {
+                                  if (e.target.files?.[0]) {
+                                    handleDirectFacultyPhotoUpload(e.target.files[0], true);
+                                  }
+                                }}
+                                className="hidden"
+                              />
+                            </div>
+                          ) : (
+                            /* Direct Upload Dropzone Button */
+                            <div>
+                              <label
+                                htmlFor="edit-faculty-direct-upload"
+                                className={`w-full border-2 border-dashed rounded-2xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer transition-all ${
+                                  isUploadingEditPhoto
+                                    ? 'border-indigo-400 bg-indigo-50/50 dark:bg-indigo-950/20'
+                                    : 'border-slate-300 dark:border-slate-700 hover:border-indigo-500 bg-slate-50/60 dark:bg-slate-900/60 hover:bg-indigo-50/20 dark:hover:bg-indigo-950/10'
+                                }`}
+                              >
+                                {isUploadingEditPhoto ? (
+                                  <div className="flex flex-col items-center gap-1.5 py-1 text-indigo-600 dark:text-indigo-400">
+                                    <Loader2 className="w-6 h-6 animate-spin" />
+                                    <span className="text-xs font-bold">Uploading photo to cloud...</span>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div className="p-2.5 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 rounded-xl">
+                                      <Upload className="w-5 h-5" />
+                                    </div>
+                                    <div className="text-center">
+                                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                                        Direct Upload Faculty Photo
+                                      </p>
+                                      <p className="text-[10px] text-slate-400 mt-0.5">
+                                        Click to choose photo (JPG, PNG, WebP up to 10MB)
+                                      </p>
+                                    </div>
+                                  </>
+                                )}
+                                <input
+                                  id="edit-faculty-direct-upload"
+                                  type="file"
+                                  accept="image/*"
+                                  disabled={isUploadingEditPhoto}
+                                  onChange={(e) => {
+                                    if (e.target.files?.[0]) {
+                                      handleDirectFacultyPhotoUpload(e.target.files[0], true);
+                                    }
+                                  }}
+                                  className="hidden"
+                                />
+                              </label>
+                            </div>
+                          )}
+
+                          {/* Fallback Manual URL Input */}
+                          {(showEditManualUrlInput || (editFacultyImgUrl && !editFacultyImgUrl.includes('ibb.co'))) && (
+                            <div className="pt-1">
+                              <input
+                                type="url"
+                                value={editFacultyImgUrl}
+                                onChange={(e) => setEditFacultyImgUrl(e.target.value)}
+                                placeholder="Or paste image URL: https://..."
+                                className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                              />
+                            </div>
+                          )}
                         </div>
 
                         <div className="space-y-1.5">
@@ -1849,10 +2151,10 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
 
                         <button
                           type="submit"
-                          disabled={loading}
+                          disabled={isUpdatingFaculty}
                           className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-600/15 hover:shadow-indigo-600/25 active:scale-98 transition-all flex items-center justify-center gap-2"
                         >
-                          {loading ? (
+                          {isUpdatingFaculty ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           ) : (
                             <Check className="w-3.5 h-3.5" />
@@ -1906,15 +2208,129 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
                           </select>
                         </div>
 
-                        <div className="space-y-1.5">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Faculty Image URL <span className="text-slate-400 font-normal">(Optional)</span></label>
-                          <input
-                            type="url"
-                            value={newFacultyImgUrl}
-                            onChange={(e) => setNewFacultyImgUrl(e.target.value)}
-                            placeholder="e.g. https://example.com/photo.jpg"
-                            className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          />
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                              <Camera className="w-3.5 h-3.5 text-indigo-500" />
+                              <span>Faculty Photo</span>
+                              <span className="text-slate-400 font-normal lowercase">(optional)</span>
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => setShowManualUrlInput(!showManualUrlInput)}
+                              className="text-[10px] text-indigo-600 dark:text-indigo-400 hover:underline font-semibold cursor-pointer"
+                            >
+                              {showManualUrlInput ? 'Hide URL field' : 'Paste URL instead'}
+                            </button>
+                          </div>
+
+                          {/* Live Photo Preview when selected/uploaded */}
+                          {newFacultyImgUrl ? (
+                            <div className="p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl flex items-center justify-between gap-3 shadow-xs">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-12 h-12 rounded-xl overflow-hidden border-2 border-indigo-500/20 bg-slate-200 dark:bg-slate-800 shrink-0 shadow-xs">
+                                  <img
+                                    src={formatImageUrl(newFacultyImgUrl)}
+                                    alt="Faculty portrait preview"
+                                    onError={handleImageError}
+                                    className="w-full h-full object-cover"
+                                  />
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-xs font-bold text-slate-900 dark:text-white truncate">Photo Ready</p>
+                                  <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
+                                    <CheckCircle className="w-3 h-3" /> Ready for submission
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <label
+                                  htmlFor="new-faculty-direct-upload"
+                                  className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400 text-xs font-bold rounded-lg cursor-pointer transition-colors"
+                                >
+                                  Change
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={() => setNewFacultyImgUrl('')}
+                                  className="p-1 hover:bg-red-50 dark:hover:bg-red-950/50 text-slate-400 hover:text-red-500 rounded-lg transition-colors cursor-pointer"
+                                  title="Remove photo"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
+                              <input
+                                id="new-faculty-direct-upload"
+                                type="file"
+                                accept="image/*"
+                                onChange={(e) => {
+                                  if (e.target.files?.[0]) {
+                                    handleDirectFacultyPhotoUpload(e.target.files[0], false);
+                                  }
+                                }}
+                                className="hidden"
+                              />
+                            </div>
+                          ) : (
+                            /* Direct Upload Dropzone Button */
+                            <div>
+                              <label
+                                htmlFor="new-faculty-direct-upload"
+                                className={`w-full border-2 border-dashed rounded-2xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer transition-all ${
+                                  isUploadingPhoto
+                                    ? 'border-indigo-400 bg-indigo-50/50 dark:bg-indigo-950/20'
+                                    : 'border-slate-300 dark:border-slate-700 hover:border-indigo-500 bg-slate-50/60 dark:bg-slate-900/60 hover:bg-indigo-50/20 dark:hover:bg-indigo-950/10'
+                                }`}
+                              >
+                                {isUploadingPhoto ? (
+                                  <div className="flex flex-col items-center gap-1.5 py-1 text-indigo-600 dark:text-indigo-400">
+                                    <Loader2 className="w-6 h-6 animate-spin" />
+                                    <span className="text-xs font-bold">Uploading photo to cloud...</span>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div className="p-2.5 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 rounded-xl">
+                                      <Upload className="w-5 h-5" />
+                                    </div>
+                                    <div className="text-center">
+                                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                                        Direct Upload Faculty Photo
+                                      </p>
+                                      <p className="text-[10px] text-slate-400 mt-0.5">
+                                        Click to choose photo (JPG, PNG, WebP up to 10MB)
+                                      </p>
+                                    </div>
+                                  </>
+                                )}
+                                <input
+                                  id="new-faculty-direct-upload"
+                                  type="file"
+                                  accept="image/*"
+                                  disabled={isUploadingPhoto}
+                                  onChange={(e) => {
+                                    if (e.target.files?.[0]) {
+                                      handleDirectFacultyPhotoUpload(e.target.files[0], false);
+                                    }
+                                  }}
+                                  className="hidden"
+                                />
+                              </label>
+                            </div>
+                          )}
+
+                          {/* Fallback Manual URL Input (Always available if toggled or if external URL present) */}
+                          {(showManualUrlInput || (newFacultyImgUrl && !newFacultyImgUrl.includes('ibb.co'))) && (
+                            <div className="pt-1">
+                              <input
+                                type="url"
+                                value={newFacultyImgUrl}
+                                onChange={(e) => setNewFacultyImgUrl(e.target.value)}
+                                placeholder="Or paste image URL: https://..."
+                                className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                              />
+                            </div>
+                          )}
                         </div>
 
                         <div className="space-y-1.5">
@@ -1941,10 +2357,10 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
 
                         <button
                           type="submit"
-                          disabled={loading}
+                          disabled={isAddingFaculty}
                           className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-600/15 hover:shadow-indigo-600/25 active:scale-98 transition-all flex items-center justify-center gap-2"
                         >
-                          {loading ? (
+                          {isAddingFaculty ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           ) : (
                             <Plus className="w-3.5 h-3.5" />
@@ -2074,7 +2490,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
               currentUser={currentUser}
               onClearLogs={handleClearAllLogs}
               onRefresh={() => setRefreshTrigger(prev => prev + 1)}
-              loading={loading}
+              loading={false}
             />
           )}
 
@@ -2142,8 +2558,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
             }}
           />
 
-        </div>
-      )}
+      </div>
     </div>
   );
 }

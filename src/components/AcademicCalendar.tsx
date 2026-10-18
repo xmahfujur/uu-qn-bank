@@ -243,8 +243,8 @@ export default function AcademicCalendar({
     // Search query
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      const matchTitle = ev.title.toLowerCase().includes(q);
-      const matchDesc = ev.description?.toLowerCase().includes(q);
+      const matchTitle = (ev.title || '').toLowerCase().includes(q);
+      const matchDesc = (ev.description || '').toLowerCase().includes(q);
       if (!matchTitle && !matchDesc) return false;
     }
     return true;

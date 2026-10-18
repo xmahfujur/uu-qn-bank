@@ -22,7 +22,9 @@ import {
   Mail,
   Cpu,
   ChevronUp,
-  Loader2
+  Loader2,
+  Copy,
+  Check
 } from 'lucide-react';
 import { signInWithPopup, signInWithRedirect, getRedirectResult, signOut } from 'firebase/auth';
 import { auth, googleProvider, syncUserProfile } from '../firebase/config';
@@ -51,6 +53,7 @@ export default function Layout({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [copiedDomain, setCopiedDomain] = useState(false);
 
   // Handle redirect sign-in result on page mount (for existing redirect sessions)
   React.useEffect(() => {
@@ -135,28 +138,27 @@ export default function Layout({
         return;
       }
 
-      // Automatic Fallback to Redirect on popup blocked, cancelled, or iframe restriction
-      console.warn('Popup login failed or blocked. Automatically retrying with signInWithRedirect()...', {
-        code: err?.code,
-        message: err?.message,
-        error: err
-      });
-
-      try {
-        await signInWithRedirect(auth, googleProvider);
+      if (err?.code === 'auth/unauthorized-domain') {
+        const domain = typeof window !== 'undefined' ? window.location.hostname : 'current domain';
+        setAuthError(
+          `Domain "${domain}" is not listed in Authorized Domains. Please verify that "${domain}" is added under Firebase Console > Authentication > Settings > Authorized domains.`
+        );
+        setIsLoggingIn(false);
         return;
-      } catch (redirectErr: any) {
-        console.error('Redirect auth fallback error details:', {
-          code: redirectErr?.code,
-          message: redirectErr?.message,
-          error: redirectErr
-        });
+      }
 
-        if (err?.code === 'auth/unauthorized-domain') {
-          setAuthError('This website domain is pending authorization in Firebase Auth settings.');
-        } else {
-          setAuthError(`Sign-in error (${err?.code || 'popup-blocked'}): ${err?.message || 'Please use direct sign-in below.'}`);
+      // Automatic Fallback to Redirect on popup blocked by browser
+      if (err?.code === 'auth/popup-blocked') {
+        console.warn('Popup login was blocked by browser. Retrying with direct redirect...');
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (redirectErr: any) {
+          console.error('Redirect auth fallback error details:', redirectErr);
+          setAuthError(`Popup blocked by browser. Please enable popups or try direct sign-in.`);
         }
+      } else {
+        setAuthError(`Sign-in error (${err?.code || 'auth-error'}): ${err?.message || 'Please try again.'}`);
       }
     } finally {
       setIsLoggingIn(false);
@@ -520,25 +522,59 @@ export default function Layout({
               <p className="text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">{authError}</p>
               
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                  onClick={handleLoginWithRedirect}
-                  disabled={isLoggingIn}
-                  className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-all shadow-sm flex items-center gap-1.5 text-xs disabled:opacity-50 cursor-pointer"
-                >
-                  {isLoggingIn ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  )}
-                  <span>Direct Sign-In with Google</span>
-                </button>
+                {authError.includes('Authorized domains') || authError.includes('authorized') ? (
+                  <>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(window.location.hostname);
+                        setCopiedDomain(true);
+                        setTimeout(() => setCopiedDomain(false), 2000);
+                      }}
+                      className="px-3.5 py-1.5 bg-slate-900 dark:bg-white text-white dark:text-slate-950 rounded-xl font-bold transition-all shadow-sm flex items-center gap-1.5 text-xs cursor-pointer hover:opacity-90"
+                    >
+                      {copiedDomain ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400 dark:text-emerald-600" />
+                          <span>Copied Hostname!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy Domain ({typeof window !== 'undefined' ? window.location.hostname : ''})</span>
+                        </>
+                      )}
+                    </button>
+                    <a
+                      href="https://console.firebase.google.com/project/blogging-website-bfc4d/authentication/settings"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3.5 py-1.5 bg-amber-200/70 hover:bg-amber-200 dark:bg-amber-900/50 dark:hover:bg-amber-900/70 text-amber-950 dark:text-amber-200 rounded-xl font-bold transition-all flex items-center gap-1.5 text-xs"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Open Firebase Auth Settings</span>
+                    </a>
+                  </>
+                ) : (
+                  <button
+                    onClick={handleLoginWithRedirect}
+                    disabled={isLoggingIn}
+                    className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-all shadow-sm flex items-center gap-1.5 text-xs disabled:opacity-50 cursor-pointer"
+                  >
+                    {isLoggingIn ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    )}
+                    <span>Direct Sign-In with Google</span>
+                  </button>
+                )}
 
                 <button
                   onClick={handleLogin}
                   disabled={isLoggingIn}
                   className="px-3 py-1.5 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl font-semibold transition-all flex items-center gap-1 text-xs disabled:opacity-50 cursor-pointer"
                 >
-                  <span>Try Popup Again</span>
+                  <span>Try Again</span>
                 </button>
               </div>
             </div>

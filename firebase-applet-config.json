@@ -1,10 +1,12 @@
 {
   "projectId": "blogging-website-bfc4d",
-  "appId": "1:732096554908:web:4a9ba941773aa399608a59",
+  "appId": "1:732096554908:web:6f8d4c78c79331f5608a59",
   "apiKey": "AIzaSyBTMz0qeaLvJldCWBKSXjTDCIYX9UR_OKs",
   "authDomain": "blogging-website-bfc4d.firebaseapp.com",
   "firestoreDatabaseId": "(default)",
   "storageBucket": "blogging-website-bfc4d.firebasestorage.app",
   "messagingSenderId": "732096554908",
-  "measurementId": "G-W5J52SRSQT"
+  "measurementId": "",
+  "oAuthClientId": "732096554908-vk0o9q1gsvoj4ufgrehnkeguiulpa62s.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
 }

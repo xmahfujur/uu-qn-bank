@@ -170,7 +170,10 @@ export default function FacultyRanking({ currentUser, departments, onTriggerAuth
   const filteredFaculties = faculties
     .filter(f => {
       const matchDept = !selectedDeptId || f.departmentId === selectedDeptId;
-      const matchSearch = !searchQuery.trim() || f.name.toLowerCase().includes(searchQuery.toLowerCase()) || f.designation.toLowerCase().includes(searchQuery.toLowerCase());
+      const sLower = (searchQuery || '').trim().toLowerCase();
+      const matchSearch = !sLower || 
+        (f.name || '').toLowerCase().includes(sLower) || 
+        (f.designation || '').toLowerCase().includes(sLower);
       return matchDept && matchSearch;
     })
     // Sort descending by averageRating, and sub-sort by totalRatingCount

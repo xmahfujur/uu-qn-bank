@@ -7,7 +7,8 @@ import {
   doc, 
   getDoc,
   setDoc,
-  updateDoc
+  updateDoc,
+  onSnapshot
 } from 'firebase/firestore';
 import { auth, db, syncUserProfile } from './firebase/config';
 import { Department, Batch, Semester, UserProfile } from './types';
@@ -98,24 +99,29 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // --- 2. ACADEMIC DATA SEEDER & LOADER ---
+  // --- 2. ACADEMIC DATA SEEDER & REAL-TIME LISTENERS ---
   useEffect(() => {
-    async function loadAcademicHierarchy() {
-      setAcademicLoading(true);
-      try {
-        const deptSnap = await getDocs(collection(db, 'departments'));
-        
-        // AUTO-SEEDER: If no departments exist, populate Uttara University catalog automatically
-        // ONLY trigger if the database is empty AND the user is logged in as an admin
-        const isAdminUser = currentUser && (
-          currentUser.role === 'super_admin' || 
-          currentUser.email?.toLowerCase() === 'mr074770@gmail.com'
-        );
+    let deptsInitial = false;
+    let batchesInitial = false;
+    let semestersInitial = false;
 
-        if (deptSnap.empty && isAdminUser) {
-          console.log('Uttara University database is empty and Admin is connected. Auto-seeding default academic hierarchy...');
-          
-          // A. Create Departments
+    const checkAllLoaded = () => {
+      if (deptsInitial && batchesInitial && semestersInitial) {
+        setAcademicLoading(false);
+      }
+    };
+
+    // Real-time Departments Listener
+    const unsubDepts = onSnapshot(collection(db, 'departments'), async (snap) => {
+      // Auto-seed only if completely empty and admin is signed in
+      const isAdminUser = currentUser && (
+        currentUser.role === 'super_admin' || 
+        currentUser.email?.toLowerCase() === 'mr074770@gmail.com'
+      );
+
+      if (snap.empty && isAdminUser) {
+        console.log('Uttara University database is empty and Admin is connected. Auto-seeding default academic hierarchy...');
+        try {
           const cseRef = await addDoc(collection(db, 'departments'), {
             name: 'Computer Science and Engineering',
             code: 'CSE',
@@ -132,7 +138,6 @@ export default function App() {
             createdAt: new Date().toISOString()
           });
 
-          // B. Create Batches for CSE
           const b60Ref = await addDoc(collection(db, 'batches'), {
             departmentId: cseRef.id,
             name: 'Batch 60',
@@ -143,8 +148,6 @@ export default function App() {
             name: 'Batch 61',
             createdAt: new Date().toISOString()
           });
-
-          // Create Batches for EEE & BBA
           const beeeRef = await addDoc(collection(db, 'batches'), {
             departmentId: eeeRef.id,
             name: 'Batch 48',
@@ -156,19 +159,16 @@ export default function App() {
             createdAt: new Date().toISOString()
           });
 
-          // C. Create Semesters for CSE Batch 60
-          const s1Ref = await addDoc(collection(db, 'semesters'), {
+          await addDoc(collection(db, 'semesters'), {
             batchId: b60Ref.id,
             name: 'Spring 2026',
             createdAt: new Date().toISOString()
           });
-          const s2Ref = await addDoc(collection(db, 'semesters'), {
+          await addDoc(collection(db, 'semesters'), {
             batchId: b60Ref.id,
             name: 'Summer 2026',
             createdAt: new Date().toISOString()
           });
-
-          // Create Semesters for other batches
           await addDoc(collection(db, 'semesters'), {
             batchId: beeeRef.id,
             name: 'Spring 2026',
@@ -179,79 +179,54 @@ export default function App() {
             name: 'Spring 2026',
             createdAt: new Date().toISOString()
           });
-
-          // D. Create Realistic Sample Questions papers
-          await addDoc(collection(db, 'questions'), {
-            courseCode: 'CSE 112',
-            courseName: 'Structured Programming Language',
-            teacher: 'Dr. M. R. Rahman',
-            imageUrl: 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=600',
-            pdfUrl: 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf',
-            departmentId: cseRef.id,
-            batchId: b60Ref.id,
-            semesterId: s1Ref.id,
-            examType: 'Mid',
-            uploadedByUID: 'system_seeder',
-            uploadedByUsername: 'founding_scholar',
-            uploadedAt: new Date().toISOString(),
-            reportCount: 0,
-            downloads: 12,
-            views: 45,
-            likes: 5,
-            likedBy: [],
-            bookmarks: []
-          });
-
-          await addDoc(collection(db, 'questions'), {
-            courseCode: 'CSE 211',
-            courseName: 'Object Oriented Programming',
-            teacher: 'Prof. J. Hasan',
-            imageUrl: 'https://images.unsplash.com/photo-1488590528505-98d2b5aba04b?q=80&w=600',
-            departmentId: cseRef.id,
-            batchId: b60Ref.id,
-            semesterId: s2Ref.id,
-            examType: 'Final',
-            uploadedByUID: 'system_seeder',
-            uploadedByUsername: 'scholar_contributor',
-            uploadedAt: new Date().toISOString(),
-            reportCount: 0,
-            downloads: 24,
-            views: 92,
-            likes: 8,
-            likedBy: [],
-            bookmarks: []
-          });
-
-          console.log('Auto-seeding of Uttara University completed successfully!');
+        } catch (seedErr) {
+          console.error('Seeding error:', seedErr);
         }
-
-        // Load Departments
-        const dSnap = await getDocs(collection(db, 'departments'));
-        const dList: Department[] = [];
-        dSnap.forEach((doc) => dList.push({ id: doc.id, ...doc.data() } as Department));
-        setDepartments(sortDepartmentsAlphabetically(dList));
-
-        // Load Batches
-        const bSnap = await getDocs(collection(db, 'batches'));
-        const bList: Batch[] = [];
-        bSnap.forEach((doc) => bList.push({ id: doc.id, ...doc.data() } as Batch));
-        setBatches(bList);
-
-        // Load Semesters
-        const sSnap = await getDocs(collection(db, 'semesters'));
-        const sList: Semester[] = [];
-        sSnap.forEach((doc) => sList.push({ id: doc.id, ...doc.data() } as Semester));
-        setSemesters(sortSemestersDescending(sList));
-
-      } catch (err) {
-        console.error('Error loading initial academic assets:', err);
-      } finally {
-        setAcademicLoading(false);
       }
-    }
 
-    loadAcademicHierarchy();
-  }, [refreshDashboardTrigger, currentUser]);
+      const dList: Department[] = [];
+      snap.forEach((doc) => dList.push({ id: doc.id, ...doc.data() } as Department));
+      setDepartments(sortDepartmentsAlphabetically(dList));
+      deptsInitial = true;
+      checkAllLoaded();
+    }, (err) => {
+      console.error('Departments subscription error:', err);
+      deptsInitial = true;
+      checkAllLoaded();
+    });
+
+    // Real-time Batches Listener
+    const unsubBatches = onSnapshot(collection(db, 'batches'), (snap) => {
+      const bList: Batch[] = [];
+      snap.forEach((doc) => bList.push({ id: doc.id, ...doc.data() } as Batch));
+      setBatches(bList);
+      batchesInitial = true;
+      checkAllLoaded();
+    }, (err) => {
+      console.error('Batches subscription error:', err);
+      batchesInitial = true;
+      checkAllLoaded();
+    });
+
+    // Real-time Semesters Listener
+    const unsubSemesters = onSnapshot(collection(db, 'semesters'), (snap) => {
+      const sList: Semester[] = [];
+      snap.forEach((doc) => sList.push({ id: doc.id, ...doc.data() } as Semester));
+      setSemesters(sortSemestersDescending(sList));
+      semestersInitial = true;
+      checkAllLoaded();
+    }, (err) => {
+      console.error('Semesters subscription error:', err);
+      semestersInitial = true;
+      checkAllLoaded();
+    });
+
+    return () => {
+      unsubDepts();
+      unsubBatches();
+      unsubSemesters();
+    };
+  }, []);
 
   // Handle successful upload to trigger catalog updates
   async function handleUploadSuccess() {
