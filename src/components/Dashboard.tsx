@@ -87,13 +87,8 @@ export default function Dashboard({
   const [selectedBatchId, setSelectedBatchId] = useState<string>('all');
   const [selectedSemesterName, setSelectedSemesterName] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'cards' | 'folders'>('cards');
-  // Auto-hide (collapse) filter panel by default on mobile devices (< 768px)
-  const [isFilterExpanded, setIsFilterExpanded] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      return window.innerWidth >= 768;
-    }
-    return false;
-  });
+  // Keep Smart Filters & Explorer open by default on all screen sizes, including mobile devices
+  const [isFilterExpanded, setIsFilterExpanded] = useState<boolean>(true);
   const [displayLimit, setDisplayLimit] = useState<number>(12);
   const [activeCategoryTab, setActiveCategoryTab] = useState<'all' | 'trending' | 'newest' | 'most_liked' | 'most_downloaded'>('all');
 
