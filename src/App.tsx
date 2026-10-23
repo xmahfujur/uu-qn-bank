@@ -76,8 +76,11 @@ export default function App() {
 
   // --- 1. USER AUTH SEED & DETECTOR ---
   useEffect(() => {
+    let isInitial = true;
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setAuthLoading(true);
+      if (isInitial) {
+        setAuthLoading(true);
+      }
       if (firebaseUser) {
         try {
           const profile = await syncUserProfile(firebaseUser);
@@ -94,6 +97,7 @@ export default function App() {
         setCurrentUser(null);
       }
       setAuthLoading(false);
+      isInitial = false;
     });
 
     return () => unsubscribe();
@@ -252,9 +256,7 @@ export default function App() {
 
   // Google Sign-In helper triggers
   async function triggerGoogleLogin() {
-    // Layout contains sign-in handlers, but this handles helper prompts
-    const btn = document.getElementById('nav-login-btn') || document.getElementById('hero-signup-btn');
-    if (btn) btn.click();
+    window.dispatchEvent(new CustomEvent('trigger-google-login'));
   }
 
   return (
@@ -324,7 +326,12 @@ export default function App() {
               )}
 
               {activeView === 'leaderboard' && (
-                <Leaderboard />
+                <Leaderboard
+                  currentUser={currentUser}
+                  onTriggerAuth={triggerGoogleLogin}
+                  onOpenUpload={() => setUploadOpen(true)}
+                  onNavigateToProfile={() => setActiveView('profile')}
+                />
               )}
 
               {activeView === 'faculty' && (

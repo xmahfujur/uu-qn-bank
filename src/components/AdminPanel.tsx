@@ -593,7 +593,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
           recordAuditLog({
             category: 'Papers',
             action: 'DELETE_PAPER',
-            details: `Permanently deleted question paper "${targetQuestion?.courseName || 'Unknown'}" (${targetQuestion?.courseCode || id}) with ${targetQuestion?.images?.length || 0} images`,
+            details: `Permanently deleted question paper "${targetQuestion?.courseName || 'Unknown'}" (${targetQuestion?.courseCode || id}) with ${targetQuestion?.imageUrls?.length || (targetQuestion?.imageUrl ? 1 : 0)} images`,
             targetId: id,
             targetName: `${targetQuestion?.courseName || ''} (${targetQuestion?.courseCode || ''})`,
             performedByUid: currentUser?.uid,

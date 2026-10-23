@@ -392,6 +392,11 @@ export default function Dashboard({
           likes: increment(-1),
           likedBy: arrayRemove(currentUser.uid)
         });
+        if (currentUser.uid === question.uploadedByUID) {
+          updateDoc(doc(db, 'users', currentUser.uid), {
+            likesReceived: increment(-1)
+          }).catch(() => {});
+        }
         // Update local state
         setQuestions(prev => prev.map(q => q.id === question.id ? {
           ...q,
@@ -404,6 +409,11 @@ export default function Dashboard({
           likes: increment(1),
           likedBy: arrayUnion(currentUser.uid)
         });
+        if (currentUser.uid === question.uploadedByUID) {
+          updateDoc(doc(db, 'users', currentUser.uid), {
+            likesReceived: increment(1)
+          }).catch(() => {});
+        }
         // Update local state
         setQuestions(prev => prev.map(q => q.id === question.id ? {
           ...q,

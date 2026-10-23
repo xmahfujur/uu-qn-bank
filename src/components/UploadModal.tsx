@@ -53,8 +53,12 @@ interface UploadModalProps {
 
 interface CapturedPage {
   id: string;
-  file: File;
+  file?: File | null;
   dataUrl: string;
+  uploadedUrl?: string;
+  deleteUrl?: string;
+  isUploading?: boolean;
+  uploadError?: string;
 }
 
 export default function UploadModal({ isOpen, onClose, currentUser, onUploadSuccess }: UploadModalProps) {
@@ -179,10 +183,36 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
   const reviewBrowseInputRef = useRef<HTMLInputElement>(null);
   const retakeCameraInputRef = useRef<HTMLInputElement>(null);
   const retakeBrowseInputRef = useRef<HTMLInputElement>(null);
-  const [capturedPages, setCapturedPages] = useState<CapturedPage[]>([]);
+  const [capturedPages, setCapturedPages] = useState<CapturedPage[]>(() => {
+    const raw = getDraftValue('imageUrls', []);
+    const rawDelete = getDraftValue('deleteUrls', []);
+    if (Array.isArray(raw) && raw.length > 0) {
+      return raw.filter((u: string) => typeof u === 'string' && u.trim() !== '').map((url: string, idx: number) => ({
+        id: `draft_${idx}_${Date.now()}`,
+        dataUrl: formatImageUrl(url),
+        uploadedUrl: formatImageUrl(url),
+        deleteUrl: rawDelete[idx] || undefined,
+        isUploading: false
+      }));
+    }
+    return [];
+  });
   const [retakeIndex, setRetakeIndex] = useState<number | null>(null);
   const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
   const [expandedPreviewUrl, setExpandedPreviewUrl] = useState<string | null>(null);
+
+  // Sync imageUrls and deleteUrls automatically with capturedPages
+  useEffect(() => {
+    const validUploaded = capturedPages
+      .map(p => p.uploadedUrl ? formatImageUrl(p.uploadedUrl.trim()) : '')
+      .filter(Boolean);
+    setImageUrls(validUploaded);
+
+    const validDeletes = capturedPages
+      .map(p => p.deleteUrl || '')
+      .filter(Boolean);
+    setDeleteUrls(validDeletes);
+  }, [capturedPages]);
 
   // Image Cropping & Editing State (Free size & Preset aspect ratio boxes)
   const [croppingPageIndex, setCroppingPageIndex] = useState<number | null>(null);
@@ -216,21 +246,39 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
         targetPage.dataUrl,
         croppedAreaPixels,
         rotation,
-        targetPage.file.name || `cropped-page-${croppingPageIndex + 1}.jpg`
+        targetPage.file?.name || `cropped-page-${croppingPageIndex + 1}.jpg`
       );
 
-      setCapturedPages(prev => {
-        const updated = [...prev];
-        updated[croppingPageIndex] = {
-          id: targetPage.id,
-          file,
-          dataUrl
-        };
-        return updated;
-      });
-
+      const targetId = targetPage.id;
       setCroppingPageIndex(null);
       setCroppedAreaPixels(null);
+
+      // Instantly update UI with cropped image
+      setCapturedPages(prev => prev.map(p => p.id === targetId ? {
+        ...p,
+        file,
+        dataUrl,
+        isUploading: true,
+        uploadError: undefined
+      } : p));
+
+      // Re-upload cropped version to ImgBB
+      try {
+        const res = await uploadSingleImageToImgBBWithDetails(file, imgbbKey);
+        setCapturedPages(prev => prev.map(p => p.id === targetId ? {
+          ...p,
+          uploadedUrl: res.url,
+          deleteUrl: res.deleteUrl,
+          isUploading: false
+        } : p));
+      } catch (err: any) {
+        console.error('Failed to upload cropped image:', err);
+        setCapturedPages(prev => prev.map(p => p.id === targetId ? {
+          ...p,
+          isUploading: false,
+          uploadError: err?.message || 'Crop upload failed'
+        } : p));
+      }
     } catch (err) {
       console.error('Error cropping image:', err);
     } finally {
@@ -238,7 +286,7 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     }
   };
 
-  // Reorder page up in review list
+  // Reorder page up
   const handleMovePageUp = (index: number) => {
     if (index <= 0) return;
     setCapturedPages(prev => {
@@ -250,7 +298,7 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     });
   };
 
-  // Reorder page down in review list
+  // Reorder page down
   const handleMovePageDown = (index: number) => {
     if (index >= capturedPages.length - 1) return;
     setCapturedPages(prev => {
@@ -262,40 +310,127 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     });
   };
 
+  // Helper to reliably check if a File is an image on any mobile or desktop OS
+  const isImageFile = (f: File): boolean => {
+    if (!f) return false;
+    if (f.type && f.type.startsWith('image/')) return true;
+    return /\.(jpe?g|png|webp|heic|heif|bmp|jfif|tiff?|gif)$/i.test(f.name || '');
+  };
+
   // Process files incoming from browse/drag-and-drop OR camera
-  // Guarantees strict sequential page order (1st selected = Page 1, 2nd = Page 2, etc.)
   const processIncomingFiles = async (files: FileList | File[], source: 'browse' | 'camera' = 'browse') => {
     setUploadSourceMode(source);
     const fileArray = Array.from(files);
-    const imageFiles = fileArray.filter(f => f.type.startsWith('image/'));
-    const nonImageFiles = fileArray.filter(f => !f.type.startsWith('image/'));
+    if (fileArray.length === 0) return;
 
-    if (nonImageFiles.length > 0) {
-      uploadFilesToImgBB(nonImageFiles);
+    const validImageFiles = fileArray.filter(isImageFile);
+    if (validImageFiles.length === 0) {
+      setNotification({
+        type: 'error',
+        message: 'No valid image found. Please select JPG, PNG, or WEBP photos of your exam paper.'
+      });
+      return;
     }
 
-    if (imageFiles.length > 0) {
-      // Deterministically read all files in exact array order
-      const loadedPages: CapturedPage[] = await Promise.all(
-        imageFiles.map((rawFile, i) => {
-          return new Promise<CapturedPage>((resolve) => {
-            const uniqueName = generateUniquePaperFileName(rawFile.name, i + 1);
-            const file = new File([rawFile], uniqueName, { type: rawFile.type || 'image/jpeg' });
-            const reader = new FileReader();
-            reader.onload = (event) => {
-              resolve({
-                id: Math.random().toString(36).substring(2, 9),
-                file,
-                dataUrl: event.target?.result as string
-              });
-            };
-            reader.readAsDataURL(file);
-          });
-        })
-      );
+    setNotification(null);
+    setIsUploadingFiles(true);
 
-      setCapturedPages(prev => [...prev, ...loadedPages]);
-      setIsCameraModalOpen(true);
+    // 1. Instantly create CapturedPage objects with local object URLs for immediate preview (<10ms)
+    const newPages: CapturedPage[] = validImageFiles.map((rawFile, i) => {
+      const uniqueName = generateUniquePaperFileName(rawFile.name, capturedPages.length + i + 1);
+      const file = new File([rawFile], uniqueName, { type: rawFile.type || 'image/jpeg' });
+      
+      let localUrl = '';
+      try {
+        localUrl = URL.createObjectURL(file);
+      } catch (e) {
+        localUrl = '';
+      }
+
+      return {
+        id: `page_${Date.now()}_${Math.random().toString(36).substring(2, 7)}_${i}`,
+        file,
+        dataUrl: localUrl,
+        isUploading: true
+      };
+    });
+
+    // Append to captured pages immediately so preview renders right away!
+    setCapturedPages(prev => [...prev, ...newPages]);
+
+    // 2. Upload to ImgBB in background and update each page
+    for (const page of newPages) {
+      if (!page.file) continue;
+      try {
+        setUploadStatusText(`Uploading page ${page.file.name}...`);
+        const result = await uploadSingleImageToImgBBWithDetails(page.file, imgbbKey);
+        
+        setCapturedPages(prev => 
+          prev.map(p => {
+            if (p.id === page.id) {
+              return {
+                ...p,
+                uploadedUrl: result.url,
+                deleteUrl: result.deleteUrl,
+                isUploading: false,
+                uploadError: undefined
+              };
+            }
+            return p;
+          })
+        );
+      } catch (err: any) {
+        console.error('Error uploading page:', err);
+        setCapturedPages(prev => 
+          prev.map(p => {
+            if (p.id === page.id) {
+              return {
+                ...p,
+                isUploading: false,
+                uploadError: err?.message || 'Upload failed'
+              };
+            }
+            return p;
+          })
+        );
+        setNotification({
+          type: 'error',
+          message: `Failed to upload ${page.file.name}: ${err?.message || 'Network error. Tap Retry.'}`
+        });
+      }
+    }
+
+    setIsUploadingFiles(false);
+    setUploadStatusText('');
+  };
+
+  // Retry upload for a failed page
+  const handleRetryUpload = async (pageId: string) => {
+    const page = capturedPages.find(p => p.id === pageId);
+    if (!page || !page.file) return;
+
+    setCapturedPages(prev => 
+      prev.map(p => p.id === pageId ? { ...p, isUploading: true, uploadError: undefined } : p)
+    );
+
+    try {
+      const result = await uploadSingleImageToImgBBWithDetails(page.file, imgbbKey);
+      setCapturedPages(prev => 
+        prev.map(p => p.id === pageId ? {
+          ...p,
+          uploadedUrl: result.url,
+          deleteUrl: result.deleteUrl,
+          isUploading: false
+        } : p)
+      );
+    } catch (err: any) {
+      setCapturedPages(prev => 
+        prev.map(p => p.id === pageId ? {
+          ...p,
+          isUploading: false,
+          uploadError: err?.message || 'Upload failed'
+        } : p)
+      );
     }
   };
 
@@ -322,130 +457,101 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
 
   // Handle File Change Event from main browse zone
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
+    if (e.target.files && e.target.files.length > 0) {
       processIncomingFiles(e.target.files, 'browse');
       e.target.value = '';
     }
   };
 
-  // Handle Mobile Camera Photo Capture (Single or Batch Snap)
+  // Handle Mobile Camera Photo Capture
   const handleCameraCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
+    if (e.target.files && e.target.files.length > 0) {
       processIncomingFiles(e.target.files, 'camera');
       e.target.value = '';
     }
   };
 
-  // Trigger camera for retaking a specific page
-  const handleTriggerRetakeCamera = (index: number) => {
-    setRetakeIndex(index);
-    if (retakeCameraInputRef.current) {
-      retakeCameraInputRef.current.click();
-    }
-  };
-
-  // Trigger file browser for replacing a specific page
-  const handleTriggerRetakeBrowse = (index: number) => {
-    setRetakeIndex(index);
-    if (retakeBrowseInputRef.current) {
-      retakeBrowseInputRef.current.click();
-    }
-  };
-
-  // Handle replacing a specific page image after retaking or browsing replacement
-  const handleRetakeCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const rawFile = e.target.files?.[0];
-    if (rawFile && retakeIndex !== null) {
-      const uniqueName = generateUniquePaperFileName(rawFile.name, retakeIndex + 1);
-      const file = new File([rawFile], uniqueName, { type: rawFile.type || 'image/jpeg' });
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const dataUrl = event.target?.result as string;
-        setCapturedPages(prev => {
-          const updated = [...prev];
-          if (updated[retakeIndex]) {
-            updated[retakeIndex] = {
-              id: updated[retakeIndex].id,
-              file,
-              dataUrl
-            };
-          }
-          return updated;
-        });
-        setRetakeIndex(null);
-      };
-      reader.readAsDataURL(file);
-    }
-    if (e.target) {
-      e.target.value = '';
-    }
-  };
-
-  // Remove a captured page from pre-upload list
+  // Remove a captured page
   const handleRemoveCapturedPage = (index: number) => {
+    const target = capturedPages[index];
+    if (target?.deleteUrl || target?.uploadedUrl) {
+      deleteImagesFromImgBB(
+        target.deleteUrl ? [target.deleteUrl] : [],
+        target.uploadedUrl ? [target.uploadedUrl] : []
+      ).catch(() => null);
+    }
     setCapturedPages(prev => prev.filter((_, i) => i !== index));
   };
 
-  // Confirm captured pages & upload to ImgBB
-  const handleConfirmAndUploadCaptured = async () => {
-    if (capturedPages.length === 0) return;
-    const filesToUpload = capturedPages.map(p => p.file);
-    setIsCameraModalOpen(false);
-    setCapturedPages([]);
-    await uploadFilesToImgBB(filesToUpload);
+  // Triggers for retaking or replacing a specific page
+  const handleTriggerRetakeBrowse = (index: number) => {
+    setRetakeIndex(index);
+    retakeBrowseInputRef.current?.click();
   };
 
-  // Upload files sequentially to ImgBB
-  async function uploadFilesToImgBB(files: FileList | File[]) {
-    if (!imgbbKey.trim()) {
-      setNotification({ 
-        type: 'error', 
-        message: 'System Upload API key is not configured. Please contact the administrator.' 
-      });
-      return;
-    }
+  const handleTriggerRetakeCamera = (index: number) => {
+    setRetakeIndex(index);
+    retakeCameraInputRef.current?.click();
+  };
 
-    setIsUploadingFiles(true);
-    setNotification(null);
-    const newUrls: string[] = [];
-    const newDeleteUrls: string[] = [];
+  const handleRetakeCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (retakeIndex === null || !e.target.files || !e.target.files[0]) return;
+    const rawFile = e.target.files[0];
+    e.target.value = '';
+    const idx = retakeIndex;
+    setRetakeIndex(null);
 
+    const uniqueName = generateUniquePaperFileName(rawFile.name, idx + 1);
+    const file = new File([rawFile], uniqueName, { type: rawFile.type || 'image/jpeg' });
+    let localUrl = '';
     try {
-      for (let i = 0; i < files.length; i++) {
-        const rawFile = files[i];
-        const uniqueName = generateUniquePaperFileName(rawFile.name, i + 1);
-        const file = new File([rawFile], uniqueName, { type: rawFile.type || 'image/jpeg' });
-        setUploadStatusText(`Optimizing & uploading page ${i + 1}/${files.length}...`);
-
-        const uploadedResult = await uploadSingleImageToImgBBWithDetails(file, imgbbKey);
-        newUrls.push(uploadedResult.url);
-        if (uploadedResult.deleteUrl) {
-          newDeleteUrls.push(uploadedResult.deleteUrl);
-        }
-      }
-
-      // Add the uploaded URLs to imageUrls and deleteUrls
-      setImageUrls(prev => {
-        const cleaned = prev.filter(url => url.trim() !== '');
-        return [...cleaned, ...newUrls];
-      });
-
-      if (newDeleteUrls.length > 0) {
-        setDeleteUrls(prev => [...prev, ...newDeleteUrls]);
-      }
-
-      setNotification({ 
-        type: 'success', 
-        message: 'Image upload success!' 
-      });
-    } catch (err: any) {
-      console.error(err);
-      setNotification({ type: 'error', message: err.message || 'Direct upload to ImgBB failed.' });
-    } finally {
-      setIsUploadingFiles(false);
-      setUploadStatusText('');
+      localUrl = URL.createObjectURL(file);
+    } catch {
+      localUrl = '';
     }
-  }
+
+    // Clean up old ImgBB page if it had uploaded
+    const oldPage = capturedPages[idx];
+    if (oldPage?.deleteUrl || oldPage?.uploadedUrl) {
+      deleteImagesFromImgBB(
+        oldPage.deleteUrl ? [oldPage.deleteUrl] : [],
+        oldPage.uploadedUrl ? [oldPage.uploadedUrl] : []
+      ).catch(() => null);
+    }
+
+    // Update target page immediately with local preview
+    setCapturedPages(prev => prev.map((p, i) => i === idx ? {
+      ...p,
+      file,
+      dataUrl: localUrl,
+      uploadedUrl: undefined,
+      deleteUrl: undefined,
+      isUploading: true,
+      uploadError: undefined
+    } : p));
+
+    // Upload to ImgBB in background
+    try {
+      const result = await uploadSingleImageToImgBBWithDetails(file, imgbbKey);
+      setCapturedPages(prev => prev.map((p, i) => i === idx ? {
+        ...p,
+        uploadedUrl: result.url,
+        deleteUrl: result.deleteUrl,
+        isUploading: false,
+        uploadError: undefined
+      } : p));
+    } catch (err: any) {
+      setCapturedPages(prev => prev.map((p, i) => i === idx ? {
+        ...p,
+        isUploading: false,
+        uploadError: err?.message || 'Upload failed'
+      } : p));
+    }
+  };
+
+  const handleConfirmAndUploadCaptured = () => {
+    setIsCameraModalOpen(false);
+  };
 
   // Load Departments
   useEffect(() => {
@@ -600,7 +706,28 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
       return;
     }
 
-    const filteredImageUrls = imageUrls.map(url => formatImageUrl(url.trim())).filter(Boolean);
+    // Check if any pages are currently uploading in the background
+    if (capturedPages.some(p => p.isUploading)) {
+      setNotification({
+        type: 'error',
+        message: 'Images are still uploading to cloud. Please wait a few seconds for uploads to finish.'
+      });
+      return;
+    }
+
+    // Check if any page failed to upload
+    const failedPages = capturedPages.filter(p => p.uploadError && !p.uploadedUrl);
+    if (failedPages.length > 0) {
+      setNotification({
+        type: 'error',
+        message: 'One or more pages failed to upload. Please tap "Retry" on the failed page before submitting.'
+      });
+      return;
+    }
+
+    const filteredImageUrls = capturedPages
+      .map(p => p.uploadedUrl ? formatImageUrl(p.uploadedUrl.trim()) : '')
+      .filter(Boolean);
 
     if (!selectedDept || !selectedBatch || !selectedSemester || !courseName || filteredImageUrls.length === 0) {
       setNotification({ type: 'error', message: 'Please fill in all required fields and upload at least one question page image.' });
@@ -682,6 +809,7 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     setTeacher('');
     setImageUrls([]);
     setDeleteUrls([]);
+    setCapturedPages([]);
     setPdfUrl('');
     setNotification(null);
     try {
@@ -849,115 +977,126 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
                 </h3>
                 <p className="text-[10px] text-slate-500">Upload single or multiple pages of your exam question paper</p>
               </div>
-              {imageUrls.length > 0 && (
+              {capturedPages.length > 0 && (
                 <span className="px-2.5 py-1 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 text-xs font-extrabold rounded-full">
-                  {imageUrls.length} {imageUrls.length === 1 ? 'Page' : 'Pages'} Uploaded
+                  {capturedPages.length} {capturedPages.length === 1 ? 'Page' : 'Pages'} Selected
                 </span>
               )}
             </div>
 
-            {/* Mobile Direct Camera Capture Banner (Automatically hidden on Desktop, shown on Mobile) */}
+            {/* Hidden Permanent Native Inputs (Accessible via <label htmlFor="..."> on iOS/Android/Desktop) */}
+            <input
+              id="mobile-camera-capture-input"
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handleCameraCapture}
+              className="sr-only"
+            />
+            <input
+              id="main-paper-file-input"
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif,.bmp"
+              onChange={handleFileChange}
+              className="sr-only"
+            />
+            <input
+              id="retake-camera-input"
+              ref={retakeCameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handleRetakeCapture}
+              className="sr-only"
+            />
+            <input
+              id="retake-browse-input"
+              ref={retakeBrowseInputRef}
+              type="file"
+              accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif,.bmp"
+              onChange={handleRetakeCapture}
+              className="sr-only"
+            />
+            <input
+              ref={reviewBrowseInputRef}
+              type="file"
+              multiple
+              accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif,.bmp"
+              onChange={(e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                  processIncomingFiles(e.target.files, 'browse');
+                  e.target.value = '';
+                }
+              }}
+              className="sr-only"
+            />
+
+            {/* Mobile Scanner Banner (Direct Camera & Gallery access) */}
             <div className="block sm:hidden bg-gradient-to-r from-indigo-900 via-indigo-800 to-purple-900 text-white rounded-2xl p-3.5 shadow-md border border-indigo-500/30">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2.5">
                   <div className="p-2 bg-amber-400 text-slate-950 rounded-xl shrink-0 shadow-sm">
                     <Camera className="w-5 h-5" />
                   </div>
-                  <h4 className="text-sm font-black text-amber-300">Camera Scanner</h4>
+                  <div>
+                    <h4 className="text-sm font-black text-amber-300">Exam Paper Scanner</h4>
+                    <p className="text-[10px] text-indigo-200">Snap clear photos of question pages</p>
+                  </div>
                 </div>
               </div>
 
-              {/* Hidden Mobile Camera & Review Inputs */}
-              <input
-                ref={cameraInputRef}
-                type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={handleCameraCapture}
-                className="hidden"
-              />
-              <input
-                ref={retakeCameraInputRef}
-                type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={handleRetakeCapture}
-                className="hidden"
-              />
-              <input
-                ref={reviewBrowseInputRef}
-                type="file"
-                multiple
-                accept="image/*"
-                onChange={(e) => {
-                  if (e.target.files && e.target.files.length > 0) {
-                    processIncomingFiles(e.target.files, 'browse');
-                    e.target.value = '';
-                  }
-                }}
-                className="hidden"
-              />
-              <input
-                ref={retakeBrowseInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleRetakeCapture}
-                className="hidden"
-              />
+              <div className="grid grid-cols-2 gap-2">
+                <label
+                  htmlFor="mobile-camera-capture-input"
+                  className="py-2.5 px-3 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 text-xs font-black rounded-xl flex items-center justify-center gap-1.5 shadow-md transition-all active:scale-[0.98] cursor-pointer text-center"
+                >
+                  <Camera className="w-4 h-4 shrink-0" />
+                  <span>Take Photo</span>
+                </label>
 
-              <div className="flex flex-col gap-2">
+                <label
+                  htmlFor="main-paper-file-input"
+                  className="py-2.5 px-3 bg-white/20 hover:bg-white/30 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all active:scale-[0.98] cursor-pointer text-center border border-white/20"
+                >
+                  <FolderPlus className="w-4 h-4 shrink-0 text-amber-300" />
+                  <span>Select Images</span>
+                </label>
+              </div>
+
+              {capturedPages.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => cameraInputRef.current?.click()}
-                  className="w-full py-2.5 px-4 bg-amber-400 hover:bg-amber-300 active:bg-amber-500 text-slate-950 text-xs font-black rounded-xl flex items-center justify-center gap-2 shadow-md transition-all active:scale-[0.98] cursor-pointer"
+                  onClick={() => setIsCameraModalOpen(true)}
+                  className="w-full mt-2.5 py-2 px-3 bg-white/10 hover:bg-white/20 text-white border border-white/15 text-xs font-bold rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer"
                 >
-                  <Camera className="w-4 h-4" />
-                  <span>Take Photo with Camera</span>
+                  <Layers className="w-3.5 h-3.5 text-amber-300" />
+                  <span>Open Full Organizer ({capturedPages.length} Page{capturedPages.length > 1 ? 's' : ''})</span>
                 </button>
-
-                {capturedPages.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setIsCameraModalOpen(true)}
-                    className="w-full py-2 px-3 bg-white/15 hover:bg-white/25 text-white border border-white/20 text-xs font-bold rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer"
-                  >
-                    <Eye className="w-3.5 h-3.5 text-amber-300" />
-                    <span>Review & Arrange ({capturedPages.length} Page{capturedPages.length > 1 ? 's' : ''})</span>
-                  </button>
-                )}
-              </div>
+              )}
             </div>
 
-            {/* Hidden File Input for trigger button */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept="image/*"
-              onChange={handleFileChange}
-              disabled={isUploadingFiles}
-              className="hidden"
-            />
-
-            {/* Drag & Drop File Upload Dropzone */}
-            <div
+            {/* Desktop Drag & Drop / Mobile Tap Dropzone */}
+            <label
+              htmlFor="main-paper-file-input"
               onDragEnter={handleDrag}
               onDragOver={handleDrag}
               onDragLeave={handleDrag}
               onDrop={handleDrop}
-              onClick={() => fileInputRef.current?.click()}
-              className={`relative border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer ${
+              className={`relative border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer block ${
                 dragActive 
                   ? 'border-indigo-500 bg-indigo-50/20 dark:bg-indigo-950/20' 
                   : 'border-slate-200 dark:border-slate-800 bg-white/50 dark:bg-slate-950/30 hover:border-indigo-400'
-              } ${isUploadingFiles ? 'opacity-70 pointer-events-none' : ''}`}
+              } ${isUploadingFiles ? 'opacity-80' : ''}`}
             >
               <div className="flex flex-col items-center justify-center gap-2">
                 {isUploadingFiles ? (
                   <>
                     <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
-                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{uploadStatusText}</p>
-                    <p className="text-[11px] text-slate-400">Please wait while files are being uploaded...</p>
+                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{uploadStatusText || 'Uploading pages...'}</p>
+                    <p className="text-[11px] text-slate-400">Previews are ready below! Uploading in background...</p>
                   </>
                 ) : (
                   <>
@@ -969,110 +1108,193 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
                         Drag & drop question page images here
                       </p>
                       <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                        or <span className="text-indigo-600 dark:text-indigo-400 font-bold underline">browse files</span> (select one or multiple images)
+                        or <span className="text-indigo-600 dark:text-indigo-400 font-bold underline">tap to browse images</span> (select one or multiple images)
                       </p>
                     </div>
                   </>
                 )}
               </div>
-            </div>
+            </label>
 
-            {/* Uploaded Question Paper Pages Preview Grid */}
-            {imageUrls.length > 0 && (
+            {/* Immediate Paper Pages Preview Grid */}
+            {capturedPages.length > 0 && (
               <div className="space-y-3 pt-2">
                 <div className="flex items-center justify-between">
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                    Uploaded Page Previews
-                  </label>
-                  <span className="text-[10px] text-slate-500">Verify image visibility before submitting</span>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                      Page Previews ({capturedPages.length} {capturedPages.length === 1 ? 'Page' : 'Pages'})
+                    </label>
+                    <p className="text-[10px] text-slate-500">Live preview of your pages. You can crop, reorder, or scan with AI.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsCameraModalOpen(true)}
+                    className="px-2.5 py-1 bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 text-xs font-bold rounded-lg flex items-center gap-1 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 transition-colors cursor-pointer"
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>Organizer</span>
+                  </button>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {imageUrls.map((url, index) => (
-                    <div 
-                      key={index} 
-                      className="group relative bg-white dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800/80 rounded-xl p-3 shadow-sm flex flex-col justify-between space-y-2.5 transition-all hover:border-indigo-500/50"
-                    >
-                      {/* Header: Page Badge & Controls */}
-                      <div className="flex items-center justify-between">
-                        <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 text-[10px] font-extrabold uppercase tracking-wider rounded-md">
-                          Page {index + 1}
-                        </span>
-                        
-                        <div className="flex items-center gap-1.5">
-                          {index === 0 && (
+                  {capturedPages.map((page, index) => {
+                    const previewSrc = page.dataUrl || (page.uploadedUrl ? formatImageUrl(page.uploadedUrl) : '');
+                    return (
+                      <div 
+                        key={page.id || index} 
+                        className="group relative bg-white dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800/80 rounded-xl p-3 shadow-sm flex flex-col justify-between space-y-2.5 transition-all hover:border-indigo-500/50"
+                      >
+                        {/* Header: Page Badge & Controls */}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 text-[10px] font-extrabold uppercase tracking-wider rounded-md">
+                              Page {index + 1}
+                            </span>
+
+                            {/* Move Up/Down Controls */}
+                            <div className="flex items-center bg-slate-100 dark:bg-slate-900 rounded-md p-0.5 border border-slate-200 dark:border-slate-800">
+                              <button
+                                type="button"
+                                onClick={() => handleMovePageUp(index)}
+                                disabled={index === 0}
+                                className="p-0.5 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 disabled:opacity-20 cursor-pointer"
+                                title="Move earlier"
+                              >
+                                <ArrowUp className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleMovePageDown(index)}
+                                disabled={index === capturedPages.length - 1}
+                                className="p-0.5 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 disabled:opacity-20 cursor-pointer"
+                                title="Move later"
+                              >
+                                <ArrowDown className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center gap-1">
+                            {/* AI Scan button for page 1 */}
+                            {index === 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleAIExtract();
+                                }}
+                                disabled={isAnalyzing || (!page.uploadedUrl && !page.dataUrl)}
+                                className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-[10px] font-bold rounded-lg flex items-center gap-1 shadow-sm transition-all cursor-pointer"
+                                title="Scan Page 1 with AI OCR to auto-fill course code and title"
+                              >
+                                {isAnalyzing ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Sparkles className="w-3 h-3 text-amber-300" />
+                                )}
+                                <span>AI Scan</span>
+                              </button>
+                            )}
+
+                            {/* Crop & Rotate */}
                             <button
                               type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleAIExtract();
-                              }}
-                              disabled={isAnalyzing || !url}
-                              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-[10px] font-bold rounded-lg flex items-center gap-1 shadow-sm transition-all cursor-pointer"
-                              title="Scan Page 1 with AI OCR to auto-fill course code and title"
+                              onClick={() => handleStartCrop(index)}
+                              className="px-2 py-1 bg-slate-100 dark:bg-slate-900 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] font-bold rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
+                              title="Crop / Rotate this page"
                             >
-                              {isAnalyzing ? (
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                              ) : (
-                                <Sparkles className="w-3 h-3 text-amber-300" />
-                              )}
-                              <span>AI Scan</span>
+                              <Crop className="w-3 h-3 text-indigo-500" />
+                              <span>Crop</span>
                             </button>
+
+                            {/* Remove */}
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveCapturedPage(index)}
+                              className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer"
+                              title="Delete page"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* High-Res Thumbnail Preview with Instant Local Rendering & Overlay Status */}
+                        <div 
+                          onClick={() => previewSrc && setExpandedPreviewUrl(previewSrc)}
+                          className="relative h-44 bg-slate-900 rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center p-1 cursor-pointer group-hover:border-indigo-500/40 transition-colors"
+                        >
+                          {previewSrc ? (
+                            <img 
+                              src={previewSrc} 
+                              alt={`Page ${index + 1} Preview`} 
+                              className="w-full h-full object-contain rounded"
+                              referrerPolicy="no-referrer-when-downgrade"
+                              onError={(e) => handleImageError(e, `Page ${index + 1}`)}
+                            />
+                          ) : (
+                            <div className="flex flex-col items-center justify-center text-slate-400 text-xs">
+                              <ImageIcon className="w-8 h-8 opacity-40 mb-1" />
+                              <span>Loading preview...</span>
+                            </div>
                           )}
 
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const removedDeleteUrl = deleteUrls[index];
-                              const removedImageUrl = imageUrls[index];
-                              if (removedDeleteUrl || removedImageUrl) {
-                                deleteImagesFromImgBB(
-                                  removedDeleteUrl ? [removedDeleteUrl] : [],
-                                  removedImageUrl ? [removedImageUrl] : []
-                                ).catch(() => null);
-                              }
-                              const next = [...imageUrls];
-                              next.splice(index, 1);
-                              setImageUrls(next);
-                              const nextDelete = [...deleteUrls];
-                              if (index < nextDelete.length) {
-                                nextDelete.splice(index, 1);
-                                setDeleteUrls(nextDelete);
-                              }
-                            }}
-                            className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer"
-                            title="Remove this page and delete from ImgBB"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {/* Status Badge Overlay */}
+                          <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-none">
+                            {page.isUploading ? (
+                              <span className="px-2 py-1 bg-slate-950/80 backdrop-blur-md text-amber-300 border border-amber-400/30 text-[10px] font-bold rounded-md flex items-center gap-1.5 shadow-sm">
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                Uploading...
+                              </span>
+                            ) : page.uploadError ? (
+                              <span className="pointer-events-auto px-2 py-1 bg-red-950/90 text-red-200 border border-red-500/50 text-[10px] font-bold rounded-md flex items-center gap-1 shadow-sm">
+                                <AlertCircle className="w-3 h-3 text-red-400" />
+                                Upload Failed
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRetryUpload(page.id);
+                                  }}
+                                  className="ml-1 px-1.5 py-0.5 bg-red-800 hover:bg-red-700 text-white rounded text-[9px] font-black underline cursor-pointer"
+                                >
+                                  Retry
+                                </button>
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-emerald-950/80 backdrop-blur-md text-emerald-300 border border-emerald-500/30 text-[10px] font-bold rounded-md flex items-center gap-1 shadow-sm">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                Ready
+                              </span>
+                            )}
+
+                            <span className="px-1.5 py-0.5 bg-slate-950/80 text-white/80 text-[9px] rounded font-medium flex items-center gap-1">
+                              <Maximize2 className="w-2.5 h-2.5" /> Tap to view
+                            </span>
+                          </div>
                         </div>
                       </div>
-
-                      {/* High-Res Thumbnail Preview */}
-                      <div className="relative h-44 bg-slate-900 rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center p-1">
-                        <img 
-                          src={formatImageUrl(url)} 
-                          alt={`Page ${index + 1} Preview`} 
-                          className="w-full h-full object-contain rounded"
-                          referrerPolicy="no-referrer-when-downgrade"
-                          onError={(e) => handleImageError(e, `Page ${index + 1}`)}
-                        />
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
-                {/* Button to Add One More Image Page */}
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploadingFiles}
-                  className="w-full py-3 bg-white dark:bg-slate-950 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 border-2 border-dashed border-indigo-300 dark:border-indigo-800/60 text-xs font-bold rounded-xl flex items-center justify-center gap-2 transition-all shadow-sm cursor-pointer mt-2"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Add One More Image Page</span>
-                </button>
+                {/* Dual Add More Pages Buttons right below previews */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2">
+                  <label
+                    htmlFor="mobile-camera-capture-input"
+                    className="py-2.5 px-3 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs rounded-xl flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer active:scale-[0.98]"
+                  >
+                    <Camera className="w-4 h-4" />
+                    <span>+ Snap Next Page (Camera)</span>
+                  </label>
+                  <label
+                    htmlFor="main-paper-file-input"
+                    className="py-2.5 px-3 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 text-xs font-bold rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-[0.98]"
+                  >
+                    <FolderPlus className="w-4 h-4" />
+                    <span>+ Add More Pages (Browse)</span>
+                  </label>
+                </div>
               </div>
             )}
           </div>

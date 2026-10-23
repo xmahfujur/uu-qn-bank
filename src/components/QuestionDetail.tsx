@@ -177,6 +177,11 @@ export default function QuestionDetail({
           likes: increment(-1),
           likedBy: arrayRemove(currentUser.uid)
         });
+        if (currentUser.uid === question.uploadedByUID) {
+          updateDoc(doc(db, 'users', currentUser.uid), {
+            likesReceived: increment(-1)
+          }).catch(() => {});
+        }
         setQuestion(prev => prev ? {
           ...prev,
           likes: prev.likes - 1,
@@ -188,6 +193,11 @@ export default function QuestionDetail({
           likes: increment(1),
           likedBy: arrayUnion(currentUser.uid)
         });
+        if (currentUser.uid === question.uploadedByUID) {
+          updateDoc(doc(db, 'users', currentUser.uid), {
+            likesReceived: increment(1)
+          }).catch(() => {});
+        }
         setQuestion(prev => prev ? {
           ...prev,
           likes: prev.likes + 1,

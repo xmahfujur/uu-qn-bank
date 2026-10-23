@@ -31,7 +31,8 @@ import {
   where, 
   updateDoc, 
   doc, 
-  deleteDoc 
+  deleteDoc,
+  onSnapshot
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { UserProfile, QuestionPaper } from '../types';
@@ -86,36 +87,70 @@ export default function Profile({ currentUser, onNavigateToQuestion, onProfileUp
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   useEffect(() => {
-    async function loadUserData() {
-      setLoading(true);
-      try {
-        // Load authored papers
-        const qAuthored = query(collection(db, 'questions'), where('uploadedByUID', '==', currentUser.uid));
-        const authSnap = await getDocs(qAuthored);
-        const authoredList: QuestionPaper[] = [];
-        authSnap.forEach((doc) => {
-          authoredList.push({ id: doc.id, ...doc.data() } as QuestionPaper);
-        });
-        setMyUploads(authoredList);
+    setLoading(true);
 
-        // Load bookmarked papers
+    // Real-time listener for authored papers (updates live as papers receive loves/reactions)
+    const qAuthored = query(collection(db, 'questions'), where('uploadedByUID', '==', currentUser.uid));
+    const unsubscribeAuthored = onSnapshot(qAuthored, (authSnap) => {
+      const authoredList: QuestionPaper[] = [];
+      authSnap.forEach((docSnap) => {
+        authoredList.push({ id: docSnap.id, ...docSnap.data() } as QuestionPaper);
+      });
+      setMyUploads(authoredList);
+
+      // Automatically sync live total likes and uploads to user profile doc
+      const liveTotalLikes = authoredList.reduce((acc, q) => {
+        const count = typeof q.likes === 'number' 
+          ? Math.max(0, q.likes) 
+          : (Array.isArray(q.likedBy) ? q.likedBy.length : 0);
+        return acc + count;
+      }, 0);
+      const liveTotalUploads = authoredList.length;
+
+      if (
+        (currentUser.likesReceived || 0) !== liveTotalLikes ||
+        (currentUser.uploadCount || 0) !== liveTotalUploads
+      ) {
+        updateDoc(doc(db, 'users', currentUser.uid), {
+          likesReceived: liveTotalLikes,
+          uploadCount: liveTotalUploads
+        }).catch(() => {});
+
+        onProfileUpdated({
+          ...currentUser,
+          likesReceived: liveTotalLikes,
+          uploadCount: liveTotalUploads
+        });
+      }
+
+      setLoading(false);
+    }, (err) => {
+      console.error('Error listening to authored papers in profile:', err);
+      setLoading(false);
+    });
+
+    // Load bookmarked papers
+    const loadBookmarks = async () => {
+      try {
         const qAll = query(collection(db, 'questions'));
         const allSnap = await getDocs(qAll);
         const bookmarksList: QuestionPaper[] = [];
-        allSnap.forEach((doc) => {
-          const q = { id: doc.id, ...doc.data() } as QuestionPaper;
+        allSnap.forEach((docSnap) => {
+          const q = { id: docSnap.id, ...docSnap.data() } as QuestionPaper;
           if (q.bookmarks && q.bookmarks.includes(currentUser.uid)) {
             bookmarksList.push(q);
           }
         });
         setMyBookmarks(bookmarksList);
       } catch (err) {
-        console.error('Error loading user profile data:', err);
-      } finally {
-        setLoading(false);
+        console.error('Error loading user bookmarked papers:', err);
       }
-    }
-    loadUserData();
+    };
+    loadBookmarks();
+
+    return () => {
+      unsubscribeAuthored();
+    };
   }, [currentUser.uid, refreshTrigger]);
 
   // Handle Profile Pic Update
