@@ -27,7 +27,7 @@ import UploadModal from './components/UploadModal';
 import FacultyRanking from './components/FacultyRanking';
 import AcademicCalendar from './components/AcademicCalendar';
 
-import { Upload, HelpCircle, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 
 export default function App() {
   // Authentication State
@@ -354,27 +354,6 @@ export default function App() {
                 />
               )}
             </>
-          )}
-
-          {/* Floating Universal Upload trigger button */}
-          {!selectedQuestionId && activeView !== 'landing' && (
-            <button
-              id="universal-float-upload-btn"
-              onClick={() => {
-                if (!currentUser) {
-                  triggerGoogleLogin();
-                } else {
-                  setUploadOpen(true);
-                }
-              }}
-              className="fixed bottom-6 right-6 z-30 p-4 bg-indigo-600 hover:bg-indigo-700 hover:scale-105 active:scale-95 text-white rounded-full shadow-2xl shadow-indigo-600/30 flex items-center justify-center transition-all group"
-              title="Upload question paper"
-            >
-              <Upload className="w-5.5 h-5.5 transition-transform group-hover:rotate-6" />
-              <span className="max-w-0 overflow-hidden group-hover:max-w-xs group-hover:ml-2 font-bold text-xs uppercase tracking-wider transition-all duration-300">
-                Upload Paper {!currentUser && '(Login Required)'}
-              </span>
-            </button>
           )}
 
           {/* Universal Upload Dialog */}

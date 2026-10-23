@@ -520,87 +520,6 @@ export default function Layout({
 
           </div>
         </div>
-
-        {/* Mobile Always-Visible Top Horizontal Section Rail */}
-        <div className="block md:hidden border-t border-slate-200/60 dark:border-slate-900/80 bg-white/95 dark:bg-slate-950/95 backdrop-blur-md px-3 py-2 overflow-x-auto no-scrollbar">
-          <div className="flex items-center gap-1.5 min-w-max">
-            <button
-              onClick={() => setActiveView('dashboard')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 flex items-center gap-1.5 transition-all cursor-pointer ${
-                activeView === 'dashboard'
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'bg-slate-100/80 dark:bg-slate-900/80 text-slate-700 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-800'
-              }`}
-            >
-              <Home className="w-3.5 h-3.5" />
-              <span>Home</span>
-            </button>
-
-            <button
-              onClick={() => setActiveView('leaderboard')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 flex items-center gap-1.5 transition-all cursor-pointer ${
-                activeView === 'leaderboard'
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'bg-slate-100/80 dark:bg-slate-900/80 text-slate-700 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-800'
-              }`}
-            >
-              <Trophy className="w-3.5 h-3.5 text-amber-500" />
-              <span>Honor Roll</span>
-            </button>
-
-            <button
-              onClick={() => setActiveView('faculty')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 flex items-center gap-1.5 transition-all cursor-pointer ${
-                activeView === 'faculty'
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'bg-slate-100/80 dark:bg-slate-900/80 text-slate-700 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-800'
-              }`}
-            >
-              <GraduationCap className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Faculty Ranking</span>
-            </button>
-
-            <button
-              onClick={() => setActiveView('calendar')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 flex items-center gap-1.5 transition-all cursor-pointer ${
-                activeView === 'calendar'
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'bg-slate-100/80 dark:bg-slate-900/80 text-slate-700 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-800'
-              }`}
-            >
-              <Calendar className="w-3.5 h-3.5 text-emerald-500" />
-              <span>Academic Calendar</span>
-            </button>
-
-            {currentUser && (
-              <button
-                onClick={() => setActiveView('profile')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 flex items-center gap-1.5 transition-all cursor-pointer ${
-                  activeView === 'profile'
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'bg-slate-100/80 dark:bg-slate-900/80 text-slate-700 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-800'
-                }`}
-              >
-                <UserIcon className="w-3.5 h-3.5 text-purple-400" />
-                <span>My Profile</span>
-              </button>
-            )}
-
-            {currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'moderator') && (
-              <button
-                onClick={() => setActiveView('admin')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 flex items-center gap-1.5 transition-all cursor-pointer ${
-                  activeView === 'admin'
-                    ? 'bg-red-600 text-white shadow-sm'
-                    : 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border border-red-500/20 hover:bg-red-100 dark:hover:bg-red-900/30'
-                }`}
-              >
-                <Shield className="w-3.5 h-3.5" />
-                <span>Admin Panel</span>
-              </button>
-            )}
-          </div>
-        </div>
       </nav>
 
       {/* Main Core View Area */}
@@ -1094,19 +1013,19 @@ export default function Layout({
             <span className="text-[10px] tracking-tight mt-0.5">Honor Roll</span>
           </button>
 
-          {/* 3. Prominent Center Action: Upload Paper */}
+          {/* 3. Upload Action */}
           <button
             onClick={() => {
               if (!currentUser) handleLogin();
               else onOpenUpload();
             }}
-            className="flex flex-col items-center justify-center w-full -mt-4 cursor-pointer group"
+            className="flex flex-col items-center justify-center w-full py-1 text-center transition-colors cursor-pointer text-indigo-600 dark:text-indigo-400 group"
             title="Upload Question Paper"
           >
-            <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-indigo-600 to-indigo-500 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-indigo-600/30 border-2 border-white dark:border-slate-950 transition-transform">
+            <div className="p-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 group-hover:scale-105 transition-transform">
               <Upload className="w-5 h-5" />
             </div>
-            <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 tracking-tight mt-0.5">
+            <span className="text-[10px] font-bold tracking-tight mt-0.5">
               Upload
             </span>
           </button>
