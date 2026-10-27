@@ -34,14 +34,21 @@ import {
   getDocs, 
   addDoc, 
   query, 
-  where 
+  where,
+  doc,
+  getDoc 
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { Department, Batch, Semester, ExamType } from '../types';
 import { sortSemestersDescending } from '../utils/semesterSort';
 import { sortDepartmentsAlphabetically } from '../utils/departmentSort';
 import { formatImageUrl, handleImageError } from '../utils/imageUrl';
-import { uploadSingleImageToImgBBWithDetails, deleteImagesFromImgBB, generateUniquePaperFileName } from '../utils/imageUploader';
+import { 
+  uploadSingleImageToImgBBWithDetails, 
+  deleteImagesFromImgBB, 
+  generateUniquePaperFileName,
+  createFileFromDataUrl 
+} from '../utils/imageUploader';
 import FreeCropEditor from './FreeCropEditor';
 
 interface UploadModalProps {
@@ -358,11 +365,32 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     // Append to captured pages immediately so preview renders right away!
     setCapturedPages(prev => [...prev, ...newPages]);
 
-    // 2. Upload to ImgBB in background and update each page
-    for (const page of newPages) {
+    // Also read base64 dataUrl in background to preserve across mobile GC/retries
+    newPages.forEach(p => {
+      if (p.file) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === 'string') {
+            const dataStr = reader.result;
+            setCapturedPages(prev => prev.map(item => item.id === p.id ? { ...item, dataUrl: dataStr } : item));
+          }
+        };
+        reader.readAsDataURL(p.file);
+      }
+    });
+
+    // 2. Upload to ImgBB sequentially with small anti-throttle delay between pages
+    for (let idx = 0; idx < newPages.length; idx++) {
+      const page = newPages[idx];
       if (!page.file) continue;
+
+      // Small 350ms delay between consecutive uploads to prevent mobile carrier / ImgBB rate limiting
+      if (idx > 0) {
+        await new Promise(r => setTimeout(r, 350));
+      }
+
       try {
-        setUploadStatusText(`Uploading page ${page.file.name}...`);
+        setUploadStatusText(`Uploading page ${idx + 1} of ${newPages.length}...`);
         const result = await uploadSingleImageToImgBBWithDetails(page.file, imgbbKey);
         
         setCapturedPages(prev => 
@@ -395,7 +423,7 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
         );
         setNotification({
           type: 'error',
-          message: `Failed to upload ${page.file.name}: ${err?.message || 'Network error. Tap Retry.'}`
+          message: `Page ${idx + 1} (${page.file.name}) upload failed. Tap "Retry" on the page.`
         });
       }
     }
@@ -404,26 +432,49 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     setUploadStatusText('');
   };
 
-  // Retry upload for a failed page
+  // Retry upload for a failed page (recreates File from dataUrl if dropped by mobile browser)
   const handleRetryUpload = async (pageId: string) => {
     const page = capturedPages.find(p => p.id === pageId);
-    if (!page || !page.file) return;
+    if (!page) return;
+
+    let targetFile = page.file;
+    if (!targetFile && page.dataUrl) {
+      try {
+        targetFile = await createFileFromDataUrl(page.dataUrl, `page_${page.id}.jpg`);
+      } catch (e) {
+        console.warn('Could not reconstruct file from dataUrl:', e);
+      }
+    }
+
+    if (!targetFile) {
+      setNotification({
+        type: 'error',
+        message: 'Could not access image data to retry. Please remove this page and re-select the image.'
+      });
+      return;
+    }
 
     setCapturedPages(prev => 
-      prev.map(p => p.id === pageId ? { ...p, isUploading: true, uploadError: undefined } : p)
+      prev.map(p => p.id === pageId ? { ...p, file: targetFile, isUploading: true, uploadError: undefined } : p)
     );
 
     try {
-      const result = await uploadSingleImageToImgBBWithDetails(page.file, imgbbKey);
+      const result = await uploadSingleImageToImgBBWithDetails(targetFile, imgbbKey);
       setCapturedPages(prev => 
         prev.map(p => p.id === pageId ? {
           ...p,
           uploadedUrl: result.url,
           deleteUrl: result.deleteUrl,
-          isUploading: false
+          isUploading: false,
+          uploadError: undefined
         } : p)
       );
+      setNotification({
+        type: 'success',
+        message: 'Page re-uploaded successfully!'
+      });
     } catch (err: any) {
+      console.error('Retry error:', err);
       setCapturedPages(prev => 
         prev.map(p => p.id === pageId ? {
           ...p,
@@ -431,6 +482,10 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
           uploadError: err?.message || 'Upload failed'
         } : p)
       );
+      setNotification({
+        type: 'error',
+        message: `Retry failed: ${err?.message || 'Network error'}`
+      });
     }
   };
 
@@ -741,6 +796,23 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
       const isPrivileged = currentUser.role === 'super_admin' || currentUser.role === 'moderator';
       const initialStatus = isPrivileged ? 'published' : 'pending';
 
+      // Guarantee freshest authoritative username from Firestore to eliminate any chance of stale session state
+      let resolvedUsername = currentUser.username || 'Anonymous';
+      if (currentUser.email?.toLowerCase() === 'mr074770@gmail.com') {
+        resolvedUsername = 'mahfujur';
+      }
+      try {
+        const uSnap = await getDoc(doc(db, 'users', currentUser.uid));
+        if (uSnap.exists()) {
+          const uData = uSnap.data();
+          if (uData?.username) {
+            resolvedUsername = uData.username;
+          }
+        }
+      } catch (err) {
+        console.warn('Could not re-fetch username from Firestore before upload, using current user state:', err);
+      }
+
       const questionData = {
         courseCode: courseCode.trim() ? courseCode.trim().toUpperCase() : 'N/A',
         courseName: courseName.trim(),
@@ -754,7 +826,7 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
         semesterId: selectedSemester,
         examType: examType,
         uploadedByUID: currentUser.uid,
-        uploadedByUsername: currentUser.username || 'Anonymous',
+        uploadedByUsername: resolvedUsername,
         uploadedAt: new Date().toISOString(),
         reportCount: 0,
         downloads: 0,
@@ -1230,7 +1302,14 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
                               alt={`Page ${index + 1} Preview`} 
                               className="w-full h-full object-contain rounded"
                               referrerPolicy="no-referrer-when-downgrade"
-                              onError={(e) => handleImageError(e, `Page ${index + 1}`)}
+                              onError={(e) => {
+                                // If local dataUrl or blob is available, preserve it instead of breaking into a generic placeholder
+                                if (page.dataUrl && e.currentTarget.src !== page.dataUrl) {
+                                  e.currentTarget.src = page.dataUrl;
+                                  return;
+                                }
+                                handleImageError(e, `Page ${index + 1}`);
+                              }}
                             />
                           ) : (
                             <div className="flex flex-col items-center justify-center text-slate-400 text-xs">
@@ -1247,20 +1326,24 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
                                 Uploading...
                               </span>
                             ) : page.uploadError ? (
-                              <span className="pointer-events-auto px-2 py-1 bg-red-950/90 text-red-200 border border-red-500/50 text-[10px] font-bold rounded-md flex items-center gap-1 shadow-sm">
-                                <AlertCircle className="w-3 h-3 text-red-400" />
-                                Upload Failed
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleRetryUpload(page.id);
-                                  }}
-                                  className="ml-1 px-1.5 py-0.5 bg-red-800 hover:bg-red-700 text-white rounded text-[9px] font-black underline cursor-pointer"
-                                >
-                                  Retry
-                                </button>
-                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  handleRetryUpload(page.id);
+                                }}
+                                onTouchEnd={(e) => {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  handleRetryUpload(page.id);
+                                }}
+                                className="pointer-events-auto px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white rounded-lg text-[10px] font-bold flex items-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer border border-rose-400/50"
+                                title="Tap to retry upload"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                <span>Failed · Tap to Retry</span>
+                              </button>
                             ) : (
                               <span className="px-2 py-0.5 bg-emerald-950/80 backdrop-blur-md text-emerald-300 border border-emerald-500/30 text-[10px] font-bold rounded-md flex items-center gap-1 shadow-sm">
                                 <CheckCircle2 className="w-3 h-3 text-emerald-400" />
@@ -1268,7 +1351,7 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
                               </span>
                             )}
 
-                            <span className="px-1.5 py-0.5 bg-slate-950/80 text-white/80 text-[9px] rounded font-medium flex items-center gap-1">
+                            <span className="pointer-events-auto px-1.5 py-0.5 bg-slate-950/80 hover:bg-slate-900 text-white/80 text-[9px] rounded font-medium flex items-center gap-1 border border-slate-700/60 shadow-sm backdrop-blur-sm">
                               <Maximize2 className="w-2.5 h-2.5" /> Tap to view
                             </span>
                           </div>

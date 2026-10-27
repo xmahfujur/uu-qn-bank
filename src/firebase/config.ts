@@ -59,11 +59,12 @@ export async function generateUniqueUsername(email: string): Promise<string> {
   }
 }
 
-// Resilient user profile synchronizer that returns instantly, ensuring successful login on any browser
+// Resilient user profile synchronizer that retrieves the true profile from Firestore
 export async function syncUserProfile(user: FirebaseUser): Promise<UserProfile> {
   const email = user.email || '';
   const isSuperAdmin = email.toLowerCase() === 'mr074770@gmail.com';
-  const defaultUsername = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '') || 'scholar';
+  // Super admin fallback is strictly 'mahfujur' to eliminate any email prefix ambiguity
+  const defaultUsername = isSuperAdmin ? 'mahfujur' : (email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '') || 'scholar');
 
   const baselineProfile: UserProfile = {
     uid: user.uid,
@@ -78,59 +79,51 @@ export async function syncUserProfile(user: FirebaseUser): Promise<UserProfile> 
 
   const userDocRef = doc(db, 'users', user.uid);
 
-  // Background promise that checks Firestore and persists changes
-  const fetchProfileFromFirestore = async (): Promise<UserProfile> => {
-    try {
-      const userDoc = await getDoc(userDocRef);
-      if (userDoc.exists()) {
-        const data = userDoc.data() as UserProfile;
-        const merged: UserProfile = {
-          ...data,
-          email: email || data.email,
-          photoURL: user.photoURL || data.photoURL || baselineProfile.photoURL,
-          role: isSuperAdmin ? 'super_admin' : (data.role || 'user')
-        };
+  try {
+    const userDoc = await getDoc(userDocRef);
+    if (userDoc.exists()) {
+      const data = userDoc.data() as UserProfile;
+      const trueUsername = data.username || defaultUsername;
 
-        if (isSuperAdmin && data.role !== 'super_admin') {
-          updateDoc(userDocRef, { role: 'super_admin' }).catch(() => {});
-        }
-        return merged;
-      }
-
-      // First time user: generate username and save profile asynchronously
-      const username = await generateUniqueUsername(email);
-      const newProfile: UserProfile = {
-        ...baselineProfile,
-        username
+      const merged: UserProfile = {
+        ...data,
+        email: email || data.email,
+        username: trueUsername,
+        photoURL: user.photoURL || data.photoURL || baselineProfile.photoURL,
+        role: isSuperAdmin ? 'super_admin' : (data.role || 'user')
       };
 
-      setDoc(userDocRef, newProfile).catch((writeErr) => {
-        console.warn('Could not write user profile to Firestore:', writeErr);
-      });
-
-      addDoc(collection(db, 'notifications'), {
-        userId: user.uid,
-        title: 'Welcome to UU Qn Bank!',
-        message: `Thank you for joining. Your username is @${username}.`,
-        createdAt: new Date().toISOString(),
-        read: false
-      }).catch(() => {});
-
-      return newProfile;
-    } catch (err) {
-      console.warn('Firestore profile lookup failed, continuing with baseline:', err);
-      return baselineProfile;
+      // Ensure super admin role and username in Firestore
+      if (isSuperAdmin && (data.role !== 'super_admin' || data.username !== 'mahfujur')) {
+        updateDoc(userDocRef, { role: 'super_admin', username: 'mahfujur' }).catch(() => {});
+        merged.username = 'mahfujur';
+        merged.role = 'super_admin';
+      }
+      return merged;
     }
-  };
 
-  // Return within 1000ms max so login is instant and never hangs
-  try {
-    const timeoutPromise = new Promise<UserProfile>((resolve) => {
-      setTimeout(() => resolve(baselineProfile), 1000);
+    // First time user: generate username and save profile
+    const username = isSuperAdmin ? 'mahfujur' : await generateUniqueUsername(email);
+    const newProfile: UserProfile = {
+      ...baselineProfile,
+      username
+    };
+
+    await setDoc(userDocRef, newProfile).catch((writeErr) => {
+      console.warn('Could not write user profile to Firestore:', writeErr);
     });
-    return await Promise.race([fetchProfileFromFirestore(), timeoutPromise]);
-  } catch (error) {
-    console.warn('syncUserProfile error, returning baseline profile:', error);
+
+    addDoc(collection(db, 'notifications'), {
+      userId: user.uid,
+      title: 'Welcome to UU Qn Bank!',
+      message: `Thank you for joining. Your username is @${username}.`,
+      createdAt: new Date().toISOString(),
+      read: false
+    }).catch(() => {});
+
+    return newProfile;
+  } catch (err) {
+    console.warn('Firestore profile lookup failed, continuing with baseline:', err);
     return baselineProfile;
   }
 }

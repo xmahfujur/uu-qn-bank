@@ -765,7 +765,9 @@ export default function QuestionDetail({
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-400 font-medium">Uploader Student</span>
-                <span className="font-semibold text-slate-800 dark:text-slate-200">@{question.uploadedByUsername}</span>
+                <span className="font-semibold text-slate-800 dark:text-slate-200">
+                  @{currentUser && currentUser.uid === question.uploadedByUID ? currentUser.username : question.uploadedByUsername}
+                </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-400 font-medium">Upload Date</span>

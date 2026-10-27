@@ -1,37 +1,44 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Plus, 
   Trash2, 
-  Edit3, 
   Users, 
   FileText, 
   Flag, 
   BarChart3, 
   FolderTree, 
-  Settings,
-  Shield,
-  Search,
-  Check,
-  AlertTriangle,
-  Loader2,
-  Lock,
-  Unlock,
-  CheckCircle,
-  Eye,
-  ArrowRight,
-  Pencil,
-  Download,
-  Heart,
-  GraduationCap,
-  Mail,
-  Phone,
-  Star,
-  ScrollText,
-  History,
-  Upload,
-  Camera,
-  Image as ImageIcon,
-  X
+  Shield, 
+  Search, 
+  Check, 
+  AlertTriangle, 
+  Loader2, 
+  Lock, 
+  Unlock, 
+  CheckCircle, 
+  Eye, 
+  ArrowRight, 
+  Pencil, 
+  Download, 
+  Heart, 
+  GraduationCap, 
+  Mail, 
+  Phone, 
+  Star, 
+  ScrollText, 
+  Upload, 
+  Camera, 
+  X,
+  RefreshCw,
+  Building2,
+  Calendar,
+  Layers,
+  Sparkles,
+  ExternalLink,
+  SlidersHorizontal,
+  CheckCircle2,
+  XCircle,
+  Copy,
+  Info
 } from 'lucide-react';
 import { 
   collection, 
@@ -40,15 +47,13 @@ import {
   updateDoc, 
   deleteDoc, 
   doc, 
-  query, 
-  where, 
-  getDoc,
-  onSnapshot
+  onSnapshot 
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { Department, Batch, Semester, QuestionPaper, Report, UserProfile, Faculty, AuditLog } from '../types';
 import EditQuestionModal from './EditQuestionModal';
 import AuditLogsView from './AuditLogsView';
+import QuickPaperPreviewModal from './QuickPaperPreviewModal';
 import { compareSemesterNames, sortSemestersDescending } from '../utils/semesterSort';
 import { sortDepartmentsAlphabetically } from '../utils/departmentSort';
 import { deleteQuestionWithImages } from '../utils/deleteQuestion';
@@ -66,7 +71,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
   const [activeTab, setActiveTab] = useState<'analytics' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'logs'>(() => {
     try {
       const saved = sessionStorage.getItem('admin_active_tab');
-      if (saved && ['analytics', 'hierarchy', 'questions', 'users', 'reports', 'faculties', 'logs'].includes(saved)) {
+      if (saved && ['analytics', 'hierarchy' , 'questions', 'users', 'reports', 'faculties', 'logs'].includes(saved)) {
         return saved as any;
       }
     } catch (e) {}
@@ -84,6 +89,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
   // Loaders & Async Action State
   const [initialLoading, setInitialLoading] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isAssigningSemesters, setIsAssigningSemesters] = useState(false);
   const [isAddingFaculty, setIsAddingFaculty] = useState(false);
   const [isUpdatingFaculty, setIsUpdatingFaculty] = useState(false);
@@ -91,7 +97,6 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
   const [isUploadingEditPhoto, setIsUploadingEditPhoto] = useState(false);
   const [showManualUrlInput, setShowManualUrlInput] = useState(false);
   const [showEditManualUrlInput, setShowEditManualUrlInput] = useState(false);
-  const [isConfirming, setIsConfirming] = useState(false);
   const [verifyingPaperId, setVerifyingPaperId] = useState<string | null>(null);
 
   // Core Data Lists
@@ -125,10 +130,17 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingQuestion, setEditingQuestion] = useState<QuestionPaper | null>(null);
 
+  // Quick Paper Preview Modal state
+  const [previewQuestion, setPreviewQuestion] = useState<QuestionPaper | null>(null);
+  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
+
   // Selection states for hierarchies
   const [selectedDeptId, setSelectedDeptId] = useState('');
   const [selectedDeptForSemester, setSelectedDeptForSemester] = useState('');
   const [selectedBatchId, setSelectedBatchId] = useState('');
+  const [deptSearchTerm, setDeptSearchTerm] = useState('');
+  const [batchSearchTerm, setBatchSearchTerm] = useState('');
+  const [semesterFilterTerm, setSemesterFilterTerm] = useState('');
 
   // Creation/Edit Dialog States
   const [newDeptName, setNewDeptName] = useState('');
@@ -141,13 +153,21 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
   // Search/Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [paperStatusFilter, setPaperStatusFilter] = useState<'all' | 'pending' | 'published' | 'rejected'>('pending');
-  const [feedbackPaperId, setFeedbackPaperId] = useState<string | null>(null);
-  const [feedbackText, setFeedbackText] = useState('');
+  const [paperDeptFilter, setPaperDeptFilter] = useState<string>('all');
+  const [paperExamFilter, setPaperExamFilter] = useState<string>('all');
+  
+  // User Filters
+  const [userRoleFilter, setUserRoleFilter] = useState<string>('all');
+  const [userStatusFilter, setUserStatusFilter] = useState<string>('all');
+
+  // Faculty Directory Filter
+  const [facultyDeptFilter, setFacultyDeptFilter] = useState<string>('all');
+  const [facultySearchTerm, setFacultySearchTerm] = useState<string>('');
 
   // Notifications
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  // Custom confirmation and prompt dialog to bypass iframe restrictions
+  // Custom confirmation and prompt dialog
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
@@ -266,8 +286,13 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
 
   function showNotif(type: 'success' | 'error', message: string) {
     setNotification({ type, message });
-    setTimeout(() => setNotification(null), 3000);
+    setTimeout(() => setNotification(null), 3500);
   }
+
+  // Pending items counts for quick alerts
+  const pendingQuestionsCount = useMemo(() => {
+    return questions.filter(q => q.status === 'pending').length;
+  }, [questions]);
 
   // --- HIERARCHY MANAGEMENT ---
 
@@ -287,11 +312,10 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       createdAt: new Date().toISOString()
     };
 
-    // 1. Instant optimistic local state update
     setDepartments(prev => sortDepartmentsAlphabetically([...prev.filter(d => d.id !== tempId), newDept]));
     setNewDeptName('');
     setNewDeptCode('');
-    showNotif('success', `Department "${name}" created.`);
+    showNotif('success', `Department "${name}" (${code}) created.`);
 
     try {
       const docRef = await addDoc(collection(db, 'departments'), {
@@ -300,10 +324,8 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
         createdAt: newDept.createdAt
       });
 
-      // Seamlessly map temp ID to Firestore document ID
       setDepartments(prev => prev.map(d => d.id === tempId ? { ...d, id: docRef.id } : d));
 
-      // Asynchronous non-blocking audit logging
       recordAuditLog({
         category: 'Hierarchy',
         action: 'CREATE_DEPARTMENT',
@@ -322,17 +344,69 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     }
   }
 
+  async function handleEditDepartment(dept: Department) {
+    setDialogInputText(`${dept.name} | ${dept.code}`);
+    setConfirmDialog({
+      isOpen: true,
+      title: `Edit Department: ${dept.code}`,
+      message: 'Update the full name and short code separated by a pipe (|):',
+      confirmText: 'Save Department',
+      requireInput: true,
+      inputLabel: 'Full Name | Short Code',
+      inputPlaceholder: 'e.g. Computer Science and Engineering | CSE',
+      onConfirm: async (inputText) => {
+        if (!inputText) return;
+        const parts = inputText.split('|');
+        const newName = (parts[0] || '').trim();
+        const newCode = (parts[1] || parts[0] || '').trim().toUpperCase();
+        if (!newName || !newCode) {
+          showNotif('error', 'Both Department name and code are required.');
+          return;
+        }
+
+        setConfirmDialog(null);
+        const prevDept = dept;
+        setDepartments(prev => sortDepartmentsAlphabetically(
+          prev.map(d => d.id === dept.id ? { ...d, name: newName, code: newCode } : d)
+        ));
+        showNotif('success', `Department updated to "${newName}" (${newCode}).`);
+
+        try {
+          await updateDoc(doc(db, 'departments', dept.id), {
+            name: newName,
+            code: newCode
+          });
+
+          recordAuditLog({
+            category: 'Hierarchy',
+            action: 'UPDATE_DEPARTMENT',
+            details: `Updated department from "${prevDept.name} (${prevDept.code})" to "${newName} (${newCode})"`,
+            targetId: dept.id,
+            targetName: newName,
+            performedByUid: currentUser?.uid,
+            performedByName: currentUser?.username || 'Admin',
+            performedByEmail: currentUser?.email,
+            performedByRole: currentUser?.role || 'Admin'
+          }).catch(console.warn);
+        } catch (err: any) {
+          setDepartments(prev => sortDepartmentsAlphabetically(
+            prev.map(d => d.id === dept.id ? prevDept : d)
+          ));
+          showNotif('error', err.message || 'Failed to update department');
+        }
+      }
+    });
+  }
+
   async function handleDeleteDepartment(deptId: string) {
     const targetDept = departments.find(d => d.id === deptId);
     setConfirmDialog({
       isOpen: true,
       title: 'Delete Department',
-      message: 'Are you sure you want to delete this department? All associated papers/batches will remain but lose parent context.',
+      message: `Delete department "${targetDept?.name || deptId}"? Batches and question papers belonging to this department will lose their parent link.`,
       confirmText: 'Delete Department',
       onConfirm: async () => {
-        // Immediately close dialog so UI never freezes
         setConfirmDialog(null);
-        // Instant optimistic removal
         setDepartments(prev => prev.filter(d => d.id !== deptId));
         showNotif('success', 'Department deleted.');
 
@@ -373,7 +447,6 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       createdAt: new Date().toISOString()
     };
 
-    // Instant optimistic addition
     setBatches(prev => [...prev.filter(b => b.id !== tempId), newBatch]);
     setNewBatchName('');
     showNotif('success', `Batch "${name}" created.`);
@@ -411,11 +484,10 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     setConfirmDialog({
       isOpen: true,
       title: 'Delete Batch',
-      message: 'Are you sure you want to delete this batch?',
+      message: `Delete batch "${targetBatch?.name || batchId}"? All assigned semesters under this batch will also lose parent association.`,
       confirmText: 'Delete Batch',
       onConfirm: async () => {
         setConfirmDialog(null);
-        // Instant optimistic update
         setBatches(prev => prev.filter(b => b.id !== batchId));
         showNotif('success', 'Batch deleted.');
 
@@ -444,7 +516,6 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     const trimmed = customSemesterName.trim();
     if (!trimmed) return;
     
-    // Extract default options & existing unique options
     const uniqueSemesterNames = Array.from(new Set(semesters.map(s => (s?.name || '').trim()))).filter(Boolean);
     const defaultSemesterNames = [
       '1st Semester', '2nd Semester', '3rd Semester', '4th Semester',
@@ -455,13 +526,11 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     ];
     const currentOptions = Array.from(new Set([...uniqueSemesterNames, ...defaultSemesterNames, ...customOptionList]));
     
-    // Check if it already exists in option list (case-insensitive)
     const exists = currentOptions.some(opt => opt.toLowerCase() === trimmed.toLowerCase());
     if (!exists) {
       setCustomOptionList(prev => [...prev, trimmed]);
     }
     
-    // Automatically check it
     const matchName = currentOptions.find(opt => opt.toLowerCase() === trimmed.toLowerCase()) || trimmed;
     if (!checkedSemesterNames.includes(matchName)) {
       setCheckedSemesterNames(prev => [...prev, matchName]);
@@ -470,15 +539,15 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     showNotif('success', `Added custom option "${trimmed}" to the list!`);
   }
 
-  async function handleCreateSemester(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleCreateSemester(e?: React.FormEvent) {
+    if (e) e.preventDefault();
     if (!selectedBatchId) {
       showNotif('error', 'Please select a target batch first.');
       return;
     }
     
     if (checkedSemesterNames.length === 0) {
-      showNotif('error', 'Please select or add at least one semester checkbox to assign.');
+      showNotif('error', 'Please select at least one semester checkbox to assign.');
       return;
     }
 
@@ -486,7 +555,6 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     const toAssign = [...checkedSemesterNames];
     setIsAssigningSemesters(true);
 
-    // Instant optimistic update for all checked semesters
     const optimisticSems: Semester[] = toAssign.map((semName, i) => ({
       id: `temp_sem_${Date.now()}_${i}`,
       batchId: selectedBatchId,
@@ -527,7 +595,6 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
         metadata: { addedCount, semesters: toAssign }
       }).catch(console.warn);
     } catch (err: any) {
-      // Revert temporary items on failure
       setSemesters(prev => prev.filter(s => !s.id.startsWith('temp_sem_')));
       showNotif('error', err.message || 'Failed to assign semesters');
     } finally {
@@ -540,11 +607,10 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     setConfirmDialog({
       isOpen: true,
       title: 'Delete Semester',
-      message: 'Are you sure you want to delete this semester folder?',
+      message: `Delete semester folder "${targetSem?.name || semId}"?`,
       confirmText: 'Delete Semester',
       onConfirm: async () => {
         setConfirmDialog(null);
-        // Instant optimistic update
         setSemesters(prev => prev.filter(s => s.id !== semId));
         showNotif('success', 'Semester deleted.');
 
@@ -576,11 +642,14 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     setConfirmDialog({
       isOpen: true,
       title: 'Delete Question Paper',
-      message: 'Delete this question paper permanently? All uploaded images will also be automatically removed from ImgBB.',
+      message: `Delete "${targetQuestion?.courseName || id}" (${targetQuestion?.courseCode || ''}) permanently? All associated image pages will be automatically deleted from cloud storage.`,
       confirmText: 'Delete Paper & Images',
       onConfirm: async () => {
         setConfirmDialog(null);
-        // Instant optimistic update
+        if (previewQuestion?.id === id) {
+          setIsPreviewModalOpen(false);
+          setPreviewQuestion(null);
+        }
         setQuestions(prev => prev.filter(q => q.id !== id));
         showNotif('success', 'Question paper deleted.');
 
@@ -609,11 +678,82 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     });
   }
 
+  async function handleVerifyQuestion(questionId: string, action: 'published' | 'rejected', feedback: string = '') {
+    const targetQ = questions.find(q => q.id === questionId);
+    setVerifyingPaperId(questionId);
+
+    setQuestions(prev => prev.map(q => q.id === questionId ? {
+      ...q,
+      status: action,
+      verifiedByUID: currentUser?.uid,
+      verifiedByUsername: currentUser?.username || 'Moderator',
+      verificationFeedback: feedback.trim()
+    } : q));
+
+    if (previewQuestion?.id === questionId) {
+      setPreviewQuestion(prev => prev ? {
+        ...prev,
+        status: action,
+        verifiedByUID: currentUser?.uid,
+        verifiedByUsername: currentUser?.username || 'Moderator',
+        verificationFeedback: feedback.trim()
+      } : null);
+    }
+
+    showNotif('success', `Question paper ${action === 'published' ? 'approved & published' : 'rejected'} successfully.`);
+
+    try {
+      await updateDoc(doc(db, 'questions', questionId), {
+        status: action,
+        verifiedByUID: currentUser?.uid,
+        verifiedByUsername: currentUser?.username || 'Moderator',
+        verificationFeedback: feedback.trim()
+      });
+
+      recordAuditLog({
+        category: 'Papers',
+        action: action === 'published' ? 'APPROVE_PAPER' : 'REJECT_PAPER',
+        details: `${action === 'published' ? 'Approved & published' : 'Rejected'} question paper "${targetQ?.courseName || questionId}" (${targetQ?.courseCode || ''})${feedback.trim() ? ` with feedback: "${feedback.trim()}"` : ''}`,
+        targetId: questionId,
+        targetName: `${targetQ?.courseName || ''} (${targetQ?.courseCode || ''})`,
+        performedByUid: currentUser?.uid,
+        performedByName: currentUser?.username || 'Moderator',
+        performedByEmail: currentUser?.email,
+        performedByRole: currentUser?.role || 'Moderator',
+        metadata: { feedback: feedback.trim() }
+      }).catch(console.warn);
+    } catch (err: any) {
+      if (targetQ) setQuestions(prev => prev.map(q => q.id === questionId ? targetQ : q));
+      showNotif('error', err.message || 'Failed to update verification status');
+    } finally {
+      setVerifyingPaperId(null);
+    }
+  }
+
+  async function promptFeedbackAndVerify(questionId: string, action: 'published' | 'rejected') {
+    const verb = action === 'published' ? 'approve and publish' : 'reject';
+    setDialogInputText('');
+    setConfirmDialog({
+      isOpen: true,
+      title: `${action === 'published' ? 'Approve & Publish' : 'Reject'} Question Paper`,
+      message: `Optional: Add feedback or reviewer notes for this ${verb} decision:`,
+      confirmText: action === 'published' ? 'Confirm Approval' : 'Confirm Rejection',
+      requireInput: true,
+      inputLabel: 'Verification Notes / Reason',
+      inputPlaceholder: action === 'published' 
+        ? 'e.g. Verified: High quality, legible scan, accurate semester.' 
+        : 'e.g. Rejected: Page 2 blurry, wrong subject code, please re-upload...',
+      onConfirm: async (text) => {
+        setConfirmDialog(null);
+        await handleVerifyQuestion(questionId, action, text || '');
+      }
+    });
+  }
+
   // --- ACTIONS ON REPORTS ---
 
   async function handleDismissReport(reportId: string) {
     const targetReport = reports.find(r => r.id === reportId);
-    // Instant optimistic update
     setReports(prev => prev.filter(r => r.id !== reportId));
     showNotif('success', 'Report dismissed.');
 
@@ -641,12 +781,11 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     const targetReport = reports.find(r => r.id === reportId);
     setConfirmDialog({
       isOpen: true,
-      title: 'Resolve Report',
-      message: 'Resolve report by deleting the question paper permanently? All uploaded images will also be deleted from ImgBB.',
-      confirmText: 'Resolve & Delete',
+      title: 'Resolve Report (Delete Paper)',
+      message: 'Resolve report by deleting the question paper permanently? All uploaded images will also be removed from storage.',
+      confirmText: 'Resolve & Delete Paper',
       onConfirm: async () => {
         setConfirmDialog(null);
-        // Instant optimistic update
         setQuestions(prev => prev.filter(q => q.id !== questionId));
         setReports(prev => prev.filter(r => r.id !== reportId));
         showNotif('success', 'Report resolved: Question paper and images deleted.');
@@ -685,14 +824,13 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     const targetUser = users.find(u => u.uid === userId);
     setConfirmDialog({
       isOpen: true,
-      title: `${action} User`,
-      message: `Are you sure you want to ${action} this user?`,
-      confirmText: `${action} User`,
+      title: `${action} Student Account`,
+      message: `Are you sure you want to ${action.toLowerCase()} student @${targetUser?.username || userId}? ${isCurrentlyBanned ? 'They will regain ability to upload papers.' : 'They will be prevented from uploading or interacting.'}`,
+      confirmText: `${action} Student`,
       onConfirm: async () => {
         setConfirmDialog(null);
-        // Instant optimistic update
         setUsers(prev => prev.map(u => u.uid === userId ? { ...u, status: isCurrentlyBanned ? 'active' : 'banned' } : u));
-        showNotif('success', `User ${isCurrentlyBanned ? 'unbanned' : 'banned'} successfully.`);
+        showNotif('success', `User @${targetUser?.username || 'Student'} ${isCurrentlyBanned ? 'unbanned' : 'banned'} successfully.`);
 
         try {
           await updateDoc(doc(db, 'users', userId), {
@@ -728,11 +866,10 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     setConfirmDialog({
       isOpen: true,
       title: 'Update User Role',
-      message: `Are you sure you want to change this user's role to ${roleLabel}?`,
+      message: `Change permission level for @${targetUser?.username || 'User'} to "${roleLabel}"?`,
       confirmText: 'Update Role',
       onConfirm: async () => {
         setConfirmDialog(null);
-        // Instant optimistic update
         setUsers(prev => prev.map(u => u.uid === userId ? { ...u, role: newRole } : u));
         showNotif('success', `User role updated to ${roleLabel} successfully.`);
 
@@ -761,6 +898,8 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     });
   }
 
+  // --- ACTIONS ON FACULTIES ---
+
   async function handleDirectFacultyPhotoUpload(file: File, isEdit: boolean = false) {
     if (!file) return;
     if (!file.type.startsWith('image/')) {
@@ -779,7 +918,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     }
 
     try {
-      showNotif('success', 'Uploading faculty photo directly...');
+      showNotif('success', 'Uploading faculty photo...');
       const uploadedUrl = await uploadSingleImageToImgBB(file);
       if (isEdit) {
         setEditFacultyImgUrl(uploadedUrl);
@@ -802,7 +941,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
   async function handleAddFaculty(e: React.FormEvent) {
     e.preventDefault();
     if (!newFacultyName.trim() || !newFacultyDesignation.trim() || !newFacultyDeptId) {
-      showNotif('error', 'Please fill out all fields.');
+      showNotif('error', 'Please fill out Name, Designation, and Department.');
       return;
     }
     const tempId = `temp_f_${Date.now()}`;
@@ -819,7 +958,6 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     if (newFacultyPhone.trim()) docData.phone = newFacultyPhone.trim();
     if (newFacultyEmail.trim()) docData.email = newFacultyEmail.trim();
 
-    // Instant optimistic addition
     setFaculties(prev => [...prev.filter(f => f.id !== tempId), { id: tempId, ...docData }]);
     const savedName = newFacultyName.trim();
     const savedDesig = newFacultyDesignation.trim();
@@ -829,7 +967,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     setNewFacultyImgUrl('');
     setNewFacultyPhone('');
     setNewFacultyEmail('');
-    showNotif('success', `Faculty member "${savedName}" added successfully!`);
+    showNotif('success', `Faculty member "${savedName}" added!`);
 
     setIsAddingFaculty(true);
     try {
@@ -874,7 +1012,6 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       email: editFacultyEmail.trim() || '',
     };
 
-    // Instant optimistic update & close edit form
     setFaculties(prev => prev.map(f => f.id === facultyId ? { ...f, ...updatedData } : f));
     setEditingFaculty(null);
     showNotif('success', `Faculty member "${updatedData.name}" updated!`);
@@ -918,11 +1055,10 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     setConfirmDialog({
       isOpen: true,
       title: 'Delete Faculty Member',
-      message: `Are you sure you want to delete "${name}"? This action is permanent.`,
+      message: `Permanently delete faculty member "${name}"?`,
       confirmText: 'Delete Member',
       onConfirm: async () => {
         setConfirmDialog(null);
-        // Instant optimistic update
         setFaculties(prev => prev.filter(f => f.id !== facultyId));
         showNotif('success', `Faculty member "${name}" deleted.`);
 
@@ -947,96 +1083,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     });
   }
 
-  async function handleVerifyQuestion(questionId: string, action: 'published' | 'rejected', feedback: string = '') {
-    const targetQ = questions.find(q => q.id === questionId);
-    setVerifyingPaperId(questionId);
-
-    // Instant optimistic in-memory update so cards/badges/counts reflect in 0ms
-    setQuestions(prev => prev.map(q => q.id === questionId ? {
-      ...q,
-      status: action,
-      verifiedByUID: currentUser?.uid,
-      verifiedByUsername: currentUser?.username || 'Moderator',
-      verificationFeedback: feedback.trim()
-    } : q));
-
-    showNotif('success', `Question paper ${action === 'published' ? 'approved & published' : 'rejected'} successfully.`);
-
-    try {
-      await updateDoc(doc(db, 'questions', questionId), {
-        status: action,
-        verifiedByUID: currentUser?.uid,
-        verifiedByUsername: currentUser?.username || 'Moderator',
-        verificationFeedback: feedback.trim()
-      });
-
-      recordAuditLog({
-        category: 'Papers',
-        action: action === 'published' ? 'APPROVE_PAPER' : 'REJECT_PAPER',
-        details: `${action === 'published' ? 'Approved & published' : 'Rejected'} question paper "${targetQ?.courseName || questionId}" (${targetQ?.courseCode || ''})${feedback.trim() ? ` with feedback: "${feedback.trim()}"` : ''}`,
-        targetId: questionId,
-        targetName: `${targetQ?.courseName || ''} (${targetQ?.courseCode || ''})`,
-        performedByUid: currentUser?.uid,
-        performedByName: currentUser?.username || 'Moderator',
-        performedByEmail: currentUser?.email,
-        performedByRole: currentUser?.role || 'Moderator',
-        metadata: { feedback: feedback.trim() }
-      }).catch(console.warn);
-    } catch (err: any) {
-      if (targetQ) setQuestions(prev => prev.map(q => q.id === questionId ? targetQ : q));
-      showNotif('error', err.message || 'Failed to update verification status');
-    } finally {
-      setVerifyingPaperId(null);
-    }
-  }
-
-  async function promptFeedbackAndVerify(questionId: string, action: 'published' | 'rejected') {
-    const verb = action === 'published' ? 'approve and publish' : 'reject';
-    setDialogInputText('');
-    setConfirmDialog({
-      isOpen: true,
-      title: `${action === 'published' ? 'Approve' : 'Reject'} Question Paper`,
-      message: `Provide feedback or notes for this ${verb} action (optional):`,
-      confirmText: action === 'published' ? 'Approve' : 'Reject',
-      requireInput: true,
-      inputLabel: 'Feedback Notes',
-      inputPlaceholder: 'e.g. Approved: highly legible, complete. Or Rejected: bad quality...',
-      onConfirm: async (text) => {
-        setConfirmDialog(null);
-        await handleVerifyQuestion(questionId, action, text || '');
-      }
-    });
-  }
-
-  // Filtering users / questions
-  const filteredQuestions = questions.filter(q => {
-    const qCourseName = (q.courseName || '').toLowerCase();
-    const qCourseCode = (q.courseCode || '').toLowerCase();
-    const qTeacher = (q.teacher || '').toLowerCase();
-    const qSearch = (searchQuery || '').toLowerCase();
-
-    const matchesSearch = qCourseName.includes(qSearch) ||
-      qCourseCode.includes(qSearch) ||
-      qTeacher.includes(qSearch);
-
-    if (!matchesSearch) return false;
-
-    if (paperStatusFilter === 'all') return true;
-    if (paperStatusFilter === 'pending') return q.status === 'pending';
-    if (paperStatusFilter === 'published') return q.status === 'published' || !q.status;
-    if (paperStatusFilter === 'rejected') return q.status === 'rejected';
-
-    return true;
-  });
-
-  const filteredUsers = users.filter(u => {
-    const uName = (u.username || '').toLowerCase();
-    const uEmail = (u.email || '').toLowerCase();
-    const qSearch = (searchQuery || '').toLowerCase();
-    return uName.includes(qSearch) || uEmail.includes(qSearch);
-  });
-
-  // Extract unique existing semester names and provide common academic options as defaults
+  // Semester options computation
   const uniqueSemesterNames = Array.from(new Set(semesters.map(s => (s?.name || '').trim()))).filter(Boolean);
   const defaultSemesterNames = [
     '1st Semester', '2nd Semester', '3rd Semester', '4th Semester',
@@ -1049,20 +1096,90 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     new Set([...uniqueSemesterNames, ...defaultSemesterNames, ...customOptionList])
   ).filter(Boolean).sort(compareSemesterNames);
 
+  // Filtered Questions with Department, Status, Exam Type, and Search Query
+  const filteredQuestions = useMemo(() => {
+    return questions.filter(q => {
+      const qCourseName = (q.courseName || '').toLowerCase();
+      const qCourseCode = (q.courseCode || '').toLowerCase();
+      const qTeacher = (q.teacher || '').toLowerCase();
+      const qUploader = (q.uploadedByUsername || '').toLowerCase();
+      const qSearch = (searchQuery || '').toLowerCase();
+
+      const matchesSearch = !searchQuery || 
+        qCourseName.includes(qSearch) ||
+        qCourseCode.includes(qSearch) ||
+        qTeacher.includes(qSearch) ||
+        qUploader.includes(qSearch);
+
+      if (!matchesSearch) return false;
+
+      // Status Filter
+      if (paperStatusFilter === 'pending' && q.status !== 'pending') return false;
+      if (paperStatusFilter === 'published' && q.status !== 'published' && q.status !== undefined) return false;
+      if (paperStatusFilter === 'rejected' && q.status !== 'rejected') return false;
+
+      // Department Filter
+      if (paperDeptFilter !== 'all' && q.departmentId !== paperDeptFilter) return false;
+
+      // Exam Type Filter
+      if (paperExamFilter !== 'all' && q.examType !== paperExamFilter) return false;
+
+      return true;
+    });
+  }, [questions, searchQuery, paperStatusFilter, paperDeptFilter, paperExamFilter]);
+
+  // Filtered Users with Role, Status, and Search Query
+  const filteredUsers = useMemo(() => {
+    return users.filter(u => {
+      const uName = (u.username || '').toLowerCase();
+      const uEmail = (u.email || '').toLowerCase();
+      const qSearch = (searchQuery || '').toLowerCase();
+
+      const matchesSearch = !searchQuery || uName.includes(qSearch) || uEmail.includes(qSearch);
+      if (!matchesSearch) return false;
+
+      // Role Filter
+      if (userRoleFilter !== 'all') {
+        const role = u.role || 'user';
+        if (role !== userRoleFilter) return false;
+      }
+
+      // Status Filter
+      if (userStatusFilter !== 'all') {
+        const isBanned = (u as any).status === 'banned';
+        if (userStatusFilter === 'banned' && !isBanned) return false;
+        if (userStatusFilter === 'active' && isBanned) return false;
+      }
+
+      return true;
+    });
+  }, [users, searchQuery, userRoleFilter, userStatusFilter]);
+
+  // Filtered Faculties with Department and Search Query
+  const filteredFaculties = useMemo(() => {
+    return faculties.filter(f => {
+      if (facultyDeptFilter !== 'all' && f.departmentId !== facultyDeptFilter) return false;
+      if (!facultySearchTerm) return true;
+      const term = facultySearchTerm.toLowerCase();
+      return (f.name || '').toLowerCase().includes(term) ||
+             (f.designation || '').toLowerCase().includes(term) ||
+             (f.email || '').toLowerCase().includes(term);
+    });
+  }, [faculties, facultyDeptFilter, facultySearchTerm]);
+
   async function handleClearAllLogs() {
     setConfirmDialog({
       isOpen: true,
-      title: 'Clear Audit Logs',
-      message: 'Are you sure you want to permanently clear all audit log records? This action is irreversible.',
-      confirmText: 'Clear All Logs',
+      title: 'Clear Audit Trail',
+      message: 'Permanently purge all activity audit logs? This action is irreversible.',
+      confirmText: 'Purge All Logs',
       onConfirm: async () => {
         try {
-          // Optimistic update
           setAuditLogs([]);
           const snap = await getDocs(collection(db, 'audit_logs'));
           const deletePromises = snap.docs.map((d) => deleteDoc(doc(db, 'audit_logs', d.id)));
           await Promise.all(deletePromises);
-          showNotif('success', 'Audit log records cleared.');
+          showNotif('success', 'Audit trail purged.');
         } catch (err: any) {
           showNotif('error', err.message);
         }
@@ -1071,52 +1188,122 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     });
   }
 
-  return (
-    <div id="admin-panel-root" className="w-full max-w-7xl mx-auto py-8 px-4 sm:px-6">
-      {/* Header Banner */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 p-6 bg-slate-900 dark:bg-slate-950 rounded-2xl border border-slate-800 shadow-lg mb-8">
-        <div className="flex items-center gap-3">
-          <div className="p-3 bg-red-500/10 text-red-500 rounded-xl border border-red-500/20">
-            <Shield className="w-6 h-6" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold font-display text-white">Super Admin Dashboard</h1>
-            <p className="text-xs text-slate-400 mt-1">Manage UU Qn Bank platform hierarchy, reports, papers, and users</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-semibold border border-emerald-500/20 flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            Automated Audit Active
-          </span>
-        </div>
-      </div>
+  // Quick helper to preview paper in modal
+  const handleOpenPreview = (question: QuestionPaper) => {
+    setPreviewQuestion(question);
+    setIsPreviewModalOpen(true);
+  };
 
+  return (
+    <div id="admin-panel-root" className="w-full max-w-7xl mx-auto py-6 sm:py-10 px-4 sm:px-6 space-y-8 animate-in fade-in duration-300">
+      
+      {/* ========================================================================= */}
+      {/* 1. EXECUTIVE PRODUCTION COMMAND BAR                                      */}
+      {/* ========================================================================= */}
+      <header className="relative overflow-hidden rounded-3xl bg-slate-950 border border-slate-800 shadow-2xl p-6 sm:p-8 text-white">
+        {/* Subtle radial glow accent */}
+        <div className="absolute top-0 right-0 -mt-12 -mr-12 w-96 h-96 bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-0 left-1/3 -mb-16 w-80 h-80 bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
+
+        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2.5">
+              <span className="px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                UU Question Bank Console
+              </span>
+              <span className="flex items-center gap-1.5 text-xs text-slate-400">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                Live Sync Active
+              </span>
+            </div>
+            
+            <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white flex items-center gap-3">
+              <Shield className="w-7 h-7 text-indigo-400" />
+              <span>Super Admin Control Center</span>
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-400 max-w-2xl leading-relaxed">
+              Real-time administrative governance for Uttara University exam archives, departmental hierarchies, faculty rankings, and community safety.
+            </p>
+          </div>
+
+          {/* Quick Action Badges / Alert Pills */}
+          <div className="flex flex-wrap items-center gap-2.5 lg:self-center">
+            {pendingQuestionsCount > 0 && (
+              <button
+                onClick={() => {
+                  handleTabChange('questions');
+                  setPaperStatusFilter('pending');
+                }}
+                className="px-3.5 py-2 rounded-2xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shadow-lg shadow-amber-500/10 active:scale-95 group"
+                title="Review pending submissions"
+              >
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping group-hover:scale-125" />
+                <span>{pendingQuestionsCount} Pending Paper{pendingQuestionsCount > 1 ? 's' : ''}</span>
+                <ArrowRight className="w-3.5 h-3.5 opacity-70 group-hover:translate-x-0.5 transition-transform" />
+              </button>
+            )}
+
+            {reports.length > 0 && (
+              <button
+                onClick={() => handleTabChange('reports')}
+                className="px-3.5 py-2 rounded-2xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-300 text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shadow-lg shadow-red-500/10 active:scale-95 group"
+                title="Investigate reported questions"
+              >
+                <AlertTriangle className="w-3.5 h-3.5 text-red-400 animate-bounce" />
+                <span>{reports.length} Open Report{reports.length > 1 ? 's' : ''}</span>
+                <ArrowRight className="w-3.5 h-3.5 opacity-70 group-hover:translate-x-0.5 transition-transform" />
+              </button>
+            )}
+
+            <button
+              onClick={() => {
+                setIsRefreshing(true);
+                setRefreshTrigger(p => p + 1);
+                setTimeout(() => {
+                  setIsRefreshing(false);
+                  showNotif('success', 'Realtime sync refreshed.');
+                }, 600);
+              }}
+              className="p-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 transition-all cursor-pointer"
+              title="Refresh database streams"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-indigo-400' : ''}`} />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Global Notification Toast */}
       {notification && (
-        <div className={`fixed bottom-6 right-6 z-50 p-4 rounded-xl shadow-xl flex items-center gap-3 border ${
+        <div className={`fixed bottom-6 right-6 z-50 p-4 rounded-2xl shadow-2xl flex items-center gap-3 border backdrop-blur-md animate-in slide-in-from-bottom duration-200 ${
           notification.type === 'success' 
-            ? 'bg-emerald-50 dark:bg-emerald-950/90 text-emerald-800 dark:text-emerald-200 border-emerald-100 dark:border-emerald-800' 
-            : 'bg-red-50 dark:bg-red-950/90 text-red-800 dark:text-red-200 border-red-100 dark:border-red-800'
+            ? 'bg-emerald-950/90 text-emerald-100 border-emerald-800 shadow-emerald-950/30' 
+            : 'bg-red-950/90 text-red-100 border-red-800 shadow-red-950/30'
         }`}>
           {notification.type === 'success' ? (
-            <CheckCircle className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+            <CheckCircle className="w-5 h-5 text-emerald-400 shrink-0" />
           ) : (
-            <AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400" />
+            <AlertTriangle className="w-5 h-5 text-red-400 shrink-0" />
           )}
-          <span className="text-sm font-medium">{notification.message}</span>
+          <span className="text-xs sm:text-sm font-semibold">{notification.message}</span>
         </div>
       )}
 
-      {/* Tabs */}
-      <div className="flex flex-wrap gap-2 mb-8 border-b border-slate-200 dark:border-slate-800 pb-4">
+      {/* ========================================================================= */}
+      {/* 2. REFINED SEGMENTED NAVIGATION BAR                                      */}
+      {/* ========================================================================= */}
+      <nav 
+        id="admin-segmented-tabs" 
+        className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-slate-200 dark:border-slate-800/80 no-scrollbar"
+      >
         {[
-          { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+          { id: 'analytics', label: 'Overview', icon: BarChart3 },
           { id: 'hierarchy', label: 'Academic Hierarchy', icon: FolderTree },
-          { id: 'faculties', label: 'Manage Faculty', icon: GraduationCap },
-          { id: 'questions', label: 'Manage Papers', icon: FileText },
-          { id: 'users', label: 'Manage Users', icon: Users },
-          { id: 'reports', label: 'Moderation Reports', icon: Flag },
-          { id: 'logs', label: 'Audit Logs', icon: ScrollText }
+          { id: 'questions', label: 'Question Papers', icon: FileText, badge: pendingQuestionsCount > 0 ? pendingQuestionsCount : null, badgeColor: 'bg-amber-500' },
+          { id: 'faculties', label: 'Faculty Roster', icon: GraduationCap, badge: faculties.length || null, badgeColor: 'bg-indigo-500' },
+          { id: 'users', label: 'Student Accounts', icon: Users, badge: users.length || null, badgeColor: 'bg-slate-500' },
+          { id: 'reports', label: 'Moderation Hub', icon: Flag, badge: reports.length > 0 ? reports.length : null, badgeColor: 'bg-red-500' },
+          { id: 'logs', label: 'Audit Trail', icon: ScrollText, badge: auditLogs.length > 0 ? auditLogs.length : null, badgeColor: 'bg-slate-500' }
         ].map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -1125,124 +1312,300 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
               id={`admin-tab-${tab.id}`}
               key={tab.id}
               onClick={() => handleTabChange(tab.id as any)}
-              className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-xl transition-all ${
+              className={`flex items-center gap-2 px-4 py-2.5 text-xs sm:text-sm font-bold rounded-2xl whitespace-nowrap transition-all cursor-pointer ${
                 isActive 
-                  ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-950 shadow-md' 
-                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-900'
+                  ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-950 shadow-md scale-[1.02]' 
+                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-900/80 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              <Icon className="w-4 h-4" />
-              {tab.label}
-              {tab.id === 'reports' && reports.length > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 text-[10px] bg-red-500 text-white rounded-full font-bold">
-                  {reports.length}
-                </span>
-              )}
-              {tab.id === 'logs' && auditLogs.length > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 text-[10px] bg-indigo-500 text-white rounded-full font-bold">
-                  {auditLogs.length}
+              <Icon className="w-4 h-4 shrink-0" />
+              <span>{tab.label}</span>
+              {tab.badge !== null && (
+                <span className={`ml-1 px-1.5 py-0.5 text-[10px] text-white rounded-full font-mono font-bold ${tab.badgeColor || 'bg-indigo-500'}`}>
+                  {tab.badge}
                 </span>
               )}
             </button>
           );
         })}
-      </div>
+      </nav>
 
+      {/* ========================================================================= */}
+      {/* 3. TAB VIEWS                                                             */}
+      {/* ========================================================================= */}
       <div className="space-y-8">
-          
-          {/* --- TAB: ANALYTICS --- */}
-          {activeTab === 'analytics' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              {[
-                { label: 'Total Departments', value: departments.length, color: 'border-indigo-500 text-indigo-600 dark:text-indigo-400' },
-                { label: 'Total Question Papers', value: questions.length, color: 'border-emerald-500 text-emerald-600 dark:text-emerald-400' },
-                { label: 'Active Contributors', value: users.length, color: 'border-violet-500 text-violet-600 dark:text-violet-400' },
-                { label: 'Pending Reports', value: reports.length, color: 'border-red-500 text-red-600 dark:text-red-400' }
-              ].map((stat, idx) => (
-                <div key={idx} className={`p-6 bg-white dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-900 border-l-4 ${stat.color.split(' ')[0]} shadow-sm`}>
-                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{stat.label}</p>
-                  <p className="text-3xl font-bold font-display mt-2">{stat.value}</p>
+        
+        {/* ----------------------------------------------------------------------- */}
+        {/* TAB 1: OVERVIEW & ANALYTICS                                             */}
+        {/* ----------------------------------------------------------------------- */}
+        {activeTab === 'analytics' && (
+          <div className="space-y-8">
+            
+            {/* Action Alert Banner for Pending Papers */}
+            {pendingQuestionsCount > 0 && (
+              <div className="p-6 rounded-3xl bg-amber-500/10 border border-amber-500/20 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div className="flex items-start gap-3.5">
+                  <div className="p-2.5 rounded-2xl bg-amber-500/20 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-base text-slate-900 dark:text-amber-200">
+                      {pendingQuestionsCount} Question Paper{pendingQuestionsCount > 1 ? 's' : ''} Awaiting Review
+                    </h3>
+                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                      New student submissions need verification to ensure legibility and accurate exam metadata before publishing.
+                    </p>
+                  </div>
                 </div>
-              ))}
+                <button
+                  onClick={() => {
+                    handleTabChange('questions');
+                    setPaperStatusFilter('pending');
+                  }}
+                  className="px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-600/20 transition-all cursor-pointer whitespace-nowrap"
+                >
+                  <span>Review Submissions</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+            )}
 
-              {/* Quick Actions Panel */}
-              <div className="col-span-1 md:col-span-2 lg:col-span-4 bg-white dark:bg-slate-950 p-6 rounded-2xl border border-slate-200 dark:border-slate-900">
-                <h3 className="text-lg font-semibold font-display mb-4">Quick Management Shortcuts</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <button 
-                    onClick={() => setActiveTab('hierarchy')}
-                    className="p-4 rounded-xl border border-slate-100 dark:border-slate-900 hover:bg-slate-50 dark:hover:bg-slate-900/40 text-left flex items-center justify-between group transition-all"
-                  >
-                    <div>
-                      <h4 className="font-semibold text-sm">Hierarchy Designer</h4>
-                      <p className="text-xs text-slate-500">Add Departments, Batches, Semesters</p>
-                    </div>
-                    <ArrowRight className="w-4 h-4 text-slate-400 group-hover:translate-x-1 transition-transform" />
-                  </button>
-                  <button 
-                    onClick={() => setActiveTab('reports')}
-                    className="p-4 rounded-xl border border-slate-100 dark:border-slate-900 hover:bg-slate-50 dark:hover:bg-slate-900/40 text-left flex items-center justify-between group transition-all"
-                  >
-                    <div>
-                      <h4 className="font-semibold text-sm text-red-600 dark:text-red-400 flex items-center gap-1.5">
-                        Moderation Hub
-                        {reports.length > 0 && <span className="w-2 h-2 rounded-full bg-red-500 animate-ping"></span>}
-                      </h4>
-                      <p className="text-xs text-slate-500">Review reported or toxic uploads</p>
-                    </div>
-                    <ArrowRight className="w-4 h-4 text-slate-400 group-hover:translate-x-1 transition-transform" />
-                  </button>
-                  <button 
-                    onClick={() => setActiveTab('users')}
-                    className="p-4 rounded-xl border border-slate-100 dark:border-slate-900 hover:bg-slate-50 dark:hover:bg-slate-900/40 text-left flex items-center justify-between group transition-all"
-                  >
-                    <div>
-                      <h4 className="font-semibold text-sm">Account Overseer</h4>
-                      <p className="text-xs text-slate-500">Ban / unban students or view reputation</p>
-                    </div>
-                    <ArrowRight className="w-4 h-4 text-slate-400 group-hover:translate-x-1 transition-transform" />
-                  </button>
-                  <button 
-                    onClick={() => setActiveTab('logs')}
-                    className="p-4 rounded-xl border border-slate-100 dark:border-slate-900 hover:bg-slate-50 dark:hover:bg-slate-900/40 text-left flex items-center justify-between group transition-all"
-                  >
-                    <div>
-                      <h4 className="font-semibold text-sm text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
-                        <ScrollText className="w-4 h-4" />
-                        Audit Trail & Logs
-                        {auditLogs.length > 0 && (
-                          <span className="px-1.5 py-0.2 text-[10px] bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 rounded-full font-bold">
-                            {auditLogs.length}
-                          </span>
-                        )}
-                      </h4>
-                      <p className="text-xs text-slate-500">Review automated activity records</p>
-                    </div>
-                    <ArrowRight className="w-4 h-4 text-slate-400 group-hover:translate-x-1 transition-transform" />
-                  </button>
+            {/* KPI Cards Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+              {/* Stat 1: Total Question Papers */}
+              <div className="p-6 bg-white dark:bg-slate-950 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Question Papers</span>
+                  <div className="p-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400">
+                    <FileText className="w-4 h-4" />
+                  </div>
+                </div>
+                <div>
+                  <div className="text-3xl font-black text-slate-900 dark:text-white font-mono">
+                    {questions.length}
+                  </div>
+                  <div className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+                    <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+                      {questions.filter(q => q.status === 'published' || !q.status).length} Verified
+                    </span>
+                    <span>•</span>
+                    <span className={pendingQuestionsCount > 0 ? 'text-amber-500 font-bold' : ''}>
+                      {pendingQuestionsCount} Pending
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Stat 2: Active University Students */}
+              <div className="p-6 bg-white dark:bg-slate-950 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">University Community</span>
+                  <div className="p-2 rounded-xl bg-violet-50 dark:bg-violet-950/60 text-violet-600 dark:text-violet-400">
+                    <Users className="w-4 h-4" />
+                  </div>
+                </div>
+                <div>
+                  <div className="text-3xl font-black text-slate-900 dark:text-white font-mono">
+                    {users.length}
+                  </div>
+                  <div className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+                    <span>{users.filter(u => u.uploadCount > 0).length} Contributors</span>
+                    <span>•</span>
+                    <span className="text-rose-500 font-bold flex items-center gap-1">
+                      <Heart className="w-3 h-3 fill-rose-500" />
+                      {users.reduce((acc, u) => acc + (u.likesReceived || 0), 0)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Stat 3: Academic Catalog */}
+              <div className="p-6 bg-white dark:bg-slate-950 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Academic Hierarchy</span>
+                  <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400">
+                    <FolderTree className="w-4 h-4" />
+                  </div>
+                </div>
+                <div>
+                  <div className="text-3xl font-black text-slate-900 dark:text-white font-mono">
+                    {departments.length}
+                  </div>
+                  <div className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+                    <span>{batches.length} Batches</span>
+                    <span>•</span>
+                    <span>{semesters.length} Semesters</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Stat 4: Faculty Directory */}
+              <div className="p-6 bg-white dark:bg-slate-950 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Faculty Roster</span>
+                  <div className="p-2 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400">
+                    <GraduationCap className="w-4 h-4" />
+                  </div>
+                </div>
+                <div>
+                  <div className="text-3xl font-black text-slate-900 dark:text-white font-mono">
+                    {faculties.length}
+                  </div>
+                  <div className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+                    <span className="text-amber-500 font-bold flex items-center gap-1">
+                      <Star className="w-3 h-3 fill-amber-400" />
+                      {(faculties.reduce((acc, f) => acc + (f.averageRating || 0), 0) / (faculties.length || 1)).toFixed(2)} Avg
+                    </span>
+                    <span>•</span>
+                    <span>{faculties.reduce((acc, f) => acc + (f.totalRatingCount || 0), 0)} Reviews</span>
+                  </div>
                 </div>
               </div>
             </div>
-          )}
 
-          {/* --- TAB: ACADEMIC HIERARCHY --- */}
-          {activeTab === 'hierarchy' && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              
-              {/* 1. Departments management */}
-              <div className="bg-white dark:bg-slate-950 p-6 rounded-2xl border border-slate-200 dark:border-slate-900 space-y-6">
+            {/* Quick Management Shortcuts */}
+            <div className="bg-white dark:bg-slate-950 p-6 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs space-y-6">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Administrative Workflow Shortcuts
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Direct pathways to high-frequency administrative controls.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <button
+                  onClick={() => handleTabChange('hierarchy')}
+                  className="p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 hover:border-indigo-500/50 hover:bg-slate-50 dark:hover:bg-slate-900/50 text-left transition-all group cursor-pointer"
+                >
+                  <div className="w-9 h-9 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mb-3">
+                    <FolderTree className="w-4 h-4" />
+                  </div>
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                    Hierarchy Designer
+                  </h4>
+                  <p className="text-xs text-slate-500 mt-1">Configure departments, batches, and semesters</p>
+                </button>
+
+                <button
+                  onClick={() => handleTabChange('questions')}
+                  className="p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 hover:border-indigo-500/50 hover:bg-slate-50 dark:hover:bg-slate-900/50 text-left transition-all group cursor-pointer"
+                >
+                  <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-3">
+                    <FileText className="w-4 h-4" />
+                  </div>
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">
+                    Question Papers
+                  </h4>
+                  <p className="text-xs text-slate-500 mt-1">Review, approve, edit metadata, or delete papers</p>
+                </button>
+
+                <button
+                  onClick={() => handleTabChange('faculties')}
+                  className="p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 hover:border-indigo-500/50 hover:bg-slate-50 dark:hover:bg-slate-900/50 text-left transition-all group cursor-pointer"
+                >
+                  <div className="w-9 h-9 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 flex items-center justify-center mb-3">
+                    <GraduationCap className="w-4 h-4" />
+                  </div>
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-white group-hover:text-amber-600 dark:group-hover:text-amber-400 transition-colors">
+                    Faculty Directory
+                  </h4>
+                  <p className="text-xs text-slate-500 mt-1">Add professors, upload photos, and update details</p>
+                </button>
+
+                <button
+                  onClick={() => handleTabChange('users')}
+                  className="p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 hover:border-indigo-500/50 hover:bg-slate-50 dark:hover:bg-slate-900/50 text-left transition-all group cursor-pointer"
+                >
+                  <div className="w-9 h-9 rounded-xl bg-violet-50 dark:bg-violet-950/60 text-violet-600 dark:text-violet-400 flex items-center justify-center mb-3">
+                    <Users className="w-4 h-4" />
+                  </div>
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-white group-hover:text-violet-600 dark:group-hover:text-violet-400 transition-colors">
+                    Student Community
+                  </h4>
+                  <p className="text-xs text-slate-500 mt-1">Assign admin/moderator roles or manage bans</p>
+                </button>
+              </div>
+            </div>
+
+            {/* Recent Activity Audit Preview */}
+            <div className="bg-white dark:bg-slate-950 p-6 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs space-y-4">
+              <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-lg font-semibold font-display">1. Departments</h3>
-                  <p className="text-xs text-slate-500">Create global departments (e.g. CSE, EEE)</p>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <ScrollText className="w-4 h-4 text-indigo-500" />
+                    <span>Recent Administrative Audit Events</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Automated trail of all system changes</p>
+                </div>
+                <button
+                  onClick={() => handleTabChange('logs')}
+                  className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 cursor-pointer"
+                >
+                  <span>View All Logs</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div className="divide-y divide-slate-100 dark:divide-slate-900">
+                {auditLogs.slice(0, 5).map((log) => (
+                  <div key={log.id} className="py-3 flex items-center justify-between gap-4 text-xs">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold uppercase bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-400 shrink-0">
+                        {log.category}
+                      </span>
+                      <p className="font-semibold text-slate-800 dark:text-slate-200 truncate">
+                        {log.details}
+                      </p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className="text-slate-400 font-mono text-[11px]">
+                        {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+
+                {auditLogs.length === 0 && (
+                  <p className="py-6 text-center text-xs text-slate-400">No activity recorded yet.</p>
+                )}
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* ----------------------------------------------------------------------- */}
+        {/* TAB 2: ACADEMIC HIERARCHY DESIGNER                                      */}
+        {/* ----------------------------------------------------------------------- */}
+        {activeTab === 'hierarchy' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            {/* 1. Departments Section */}
+            <div className="bg-white dark:bg-slate-950 p-6 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs flex flex-col justify-between space-y-6">
+              <div className="space-y-4">
+                <div>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                      <Building2 className="w-4 h-4 text-indigo-500" />
+                      <span>1. Departments</span>
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-mono">
+                      {departments.length} Depts
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">Create or edit university faculties (e.g. CSE, EEE, BBA)</p>
                 </div>
 
-                <form onSubmit={handleCreateDepartment} className="space-y-3">
+                {/* Create Department Form */}
+                <form onSubmit={handleCreateDepartment} className="space-y-2.5 p-3.5 bg-slate-50 dark:bg-slate-900/60 rounded-2xl border border-slate-200/60 dark:border-slate-800/60">
                   <input
                     type="text"
-                    placeholder="Department Name (e.g., Computer Science)"
+                    placeholder="Full Name (e.g. Computer Science)"
                     value={newDeptName}
                     onChange={(e) => setNewDeptName(e.target.value)}
-                    className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl"
+                    className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   />
                   <div className="flex gap-2">
                     <input
@@ -1250,49 +1613,101 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
                       placeholder="Code (e.g. CSE)"
                       value={newDeptCode}
                       onChange={(e) => setNewDeptCode(e.target.value)}
-                      className="w-1/3 px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl"
+                      className="w-1/3 px-3 py-2 text-xs bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white uppercase font-mono focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     />
                     <button
                       type="submit"
-                      className="flex-1 bg-slate-900 dark:bg-white text-white dark:text-slate-950 font-semibold text-xs py-2 rounded-xl flex items-center justify-center gap-1.5 hover:opacity-90"
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2 rounded-xl flex items-center justify-center gap-1.5 transition-all shadow-xs cursor-pointer"
                     >
                       <Plus className="w-4 h-4" /> Add Dept
                     </button>
                   </div>
                 </form>
 
-                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                  {departments.map((dept) => (
-                    <div key={dept.id} className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800/50 rounded-xl">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{dept.name}</p>
-                        <p className="text-xs font-mono text-slate-500">{dept.code}</p>
-                      </div>
-                      <button
-                        onClick={() => handleDeleteDepartment(dept.id)}
-                        className="p-1 text-slate-400 hover:text-red-500 transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))}
+                {/* Search filter for departments */}
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Search departments..."
+                    value={deptSearchTerm}
+                    onChange={(e) => setDeptSearchTerm(e.target.value)}
+                    className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white focus:outline-none"
+                  />
+                </div>
+
+                {/* Departments Roster List */}
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {departments
+                    .filter(d => !deptSearchTerm || d.name.toLowerCase().includes(deptSearchTerm.toLowerCase()) || d.code.toLowerCase().includes(deptSearchTerm.toLowerCase()))
+                    .map((dept) => {
+                      const deptBatches = batches.filter(b => b.departmentId === dept.id);
+                      const deptPapers = questions.filter(q => q.departmentId === dept.id);
+                      return (
+                        <div key={dept.id} className="p-3 bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/60 rounded-2xl flex items-center justify-between gap-3 group hover:border-slate-300 dark:hover:border-slate-700 transition-all">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-xs font-bold px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/80 text-indigo-600 dark:text-indigo-400">
+                                {dept.code}
+                              </span>
+                              <h4 className="font-bold text-xs text-slate-900 dark:text-white truncate">
+                                {dept.name}
+                              </h4>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-1">
+                              {deptBatches.length} Batches • {deptPapers.length} Papers
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleEditDepartment(dept)}
+                              className="p-1.5 text-slate-400 hover:text-indigo-500 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
+                              title="Edit department name or code"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteDepartment(dept.id)}
+                              className="p-1.5 text-slate-400 hover:text-red-500 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors"
+                              title="Delete department"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
                 </div>
               </div>
+            </div>
 
-              {/* 2. Batches management */}
-              <div className="bg-white dark:bg-slate-950 p-6 rounded-2xl border border-slate-200 dark:border-slate-900 space-y-6">
+            {/* 2. Batches Section */}
+            <div className="bg-white dark:bg-slate-950 p-6 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs flex flex-col justify-between space-y-6">
+              <div className="space-y-4">
                 <div>
-                  <h3 className="text-lg font-semibold font-display">2. Batches</h3>
-                  <p className="text-xs text-slate-500">Create student batches associated with a department</p>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                      <GraduationCap className="w-4 h-4 text-emerald-500" />
+                      <span>2. Student Batches</span>
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 font-mono">
+                      {batches.length} Batches
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">Create student cohorts linked to a department</p>
                 </div>
 
-                <div className="space-y-3">
+                {/* Filter and Add Batch */}
+                <div className="space-y-2.5 p-3.5 bg-slate-50 dark:bg-slate-900/60 rounded-2xl border border-slate-200/60 dark:border-slate-800/60">
                   <select
                     value={selectedDeptId}
                     onChange={(e) => setSelectedDeptId(e.target.value)}
-                    className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200"
+                    className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                   >
-                    <option value="">Select Target Department</option>
+                    <option value="">Select Target Department *</option>
                     {departments.map((dept) => (
                       <option key={dept.id} value={dept.id}>{dept.name} ({dept.code})</option>
                     ))}
@@ -1301,276 +1716,292 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
                   <form onSubmit={handleCreateBatch} className="flex gap-2">
                     <input
                       type="text"
-                      placeholder="Batch Name (e.g. Batch 60)"
+                      placeholder="e.g. Batch 60, Batch 61"
                       value={newBatchName}
                       onChange={(e) => setNewBatchName(e.target.value)}
                       disabled={!selectedDeptId}
-                      className="flex-1 px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl disabled:opacity-50"
+                      className="flex-1 px-3 py-2 text-xs bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white disabled:opacity-50 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                     />
                     <button
                       type="submit"
                       disabled={!selectedDeptId}
-                      className="bg-slate-900 dark:bg-white text-white dark:text-slate-950 font-semibold text-xs px-4 py-2 rounded-xl flex items-center gap-1.5 hover:opacity-90 disabled:opacity-50"
+                      className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
                     >
                       <Plus className="w-4 h-4" /> Add
                     </button>
                   </form>
                 </div>
 
-                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                {/* Batches List */}
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                   {batches
-                    .filter((b) => !selectedDeptId || b.departmentId === selectedDeptId)
+                    .filter(b => !selectedDeptId || b.departmentId === selectedDeptId)
                     .sort((a, b) => {
                       const numA = parseInt(a.name.replace(/\D/g, ''), 10) || 0;
                       const numB = parseInt(b.name.replace(/\D/g, ''), 10) || 0;
                       return numB - numA;
                     })
                     .map((batch) => {
-                      const d = departments.find(dept => dept.id === batch.departmentId);
+                      const dept = departments.find(d => d.id === batch.departmentId);
+                      const semsCount = semesters.filter(s => s.batchId === batch.id).length;
                       return (
-                        <div key={batch.id} className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800/50 rounded-xl">
-                          <div>
-                            <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{batch.name}</p>
-                            <p className="text-xs text-slate-500">Dept: {d ? d.code : 'Unknown'}</p>
+                        <div key={batch.id} className="p-3 bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/60 rounded-2xl flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-xs text-slate-900 dark:text-white">
+                                {batch.name}
+                              </span>
+                              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
+                                {dept ? dept.code : 'Unknown'}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-1">
+                              {semsCount} Semester Folder{semsCount !== 1 ? 's' : ''} assigned
+                            </p>
                           </div>
+
                           <button
+                            type="button"
                             onClick={() => handleDeleteBatch(batch.id)}
-                            className="p-1 text-slate-400 hover:text-red-500 transition-colors"
+                            className="p-1.5 text-slate-400 hover:text-red-500 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors"
+                            title="Delete batch"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
                       );
                     })}
+
+                  {batches.filter(b => !selectedDeptId || b.departmentId === selectedDeptId).length === 0 && (
+                    <p className="text-center py-8 text-xs text-slate-400">
+                      {selectedDeptId ? 'No batches in this department yet.' : 'Select a department to view batches.'}
+                    </p>
+                  )}
                 </div>
               </div>
+            </div>
 
-              {/* 3. Semesters management */}
-              <div className="bg-white dark:bg-slate-950 p-6 rounded-2xl border border-slate-200 dark:border-slate-900 space-y-6">
+            {/* 3. Semesters Section */}
+            <div className="bg-white dark:bg-slate-950 p-6 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs flex flex-col justify-between space-y-6">
+              <div className="space-y-4">
                 <div>
-                  <h3 className="text-lg font-semibold font-display">3. Semesters</h3>
-                  <p className="text-xs text-slate-500">Create & assign semester folders under a student batch</p>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                      <Calendar className="w-4 h-4 text-violet-500" />
+                      <span>3. Semester Folders</span>
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-50 dark:bg-violet-950/60 text-violet-600 dark:text-violet-400 font-mono">
+                      {semesters.length} Folders
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">Assign semester folders under a student batch</p>
                 </div>
 
-                <div className="space-y-4">
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Department (Short Form) *</label>
-                    <select
-                      value={selectedDeptForSemester}
-                      onChange={(e) => {
-                        setSelectedDeptForSemester(e.target.value);
-                        setSelectedBatchId(''); // Reset batch selection when department changes
-                        setCheckedSemesterNames([]);
-                      }}
-                      className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                    >
-                      <option value="">Select Department First</option>
-                      {departments.map((dept) => (
-                        <option key={dept.id} value={dept.id}>
-                          {dept.code} - {dept.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Target Batch *</label>
-                    <select
-                      value={selectedBatchId}
-                      onChange={(e) => {
-                        setSelectedBatchId(e.target.value);
-                        setCheckedSemesterNames([]); // reset selection when batch changes
-                      }}
-                      disabled={!selectedDeptForSemester}
-                      className="w-full px-3 py-2 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <option value="">
-                        {!selectedDeptForSemester ? "Please Select Department First" : "Select Target Batch"}
+                {/* Cascading selectors */}
+                <div className="space-y-2.5 p-3.5 bg-slate-50 dark:bg-slate-900/60 rounded-2xl border border-slate-200/60 dark:border-slate-800/60">
+                  <select
+                    value={selectedDeptForSemester}
+                    onChange={(e) => {
+                      setSelectedDeptForSemester(e.target.value);
+                      setSelectedBatchId('');
+                      setCheckedSemesterNames([]);
+                    }}
+                    className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                  >
+                    <option value="">1. Pick Department First *</option>
+                    {departments.map((dept) => (
+                      <option key={dept.id} value={dept.id}>
+                        {dept.code} - {dept.name}
                       </option>
-                      {batches
-                        .filter((b) => b.departmentId === selectedDeptForSemester)
-                        .sort((a, b) => {
-                          const numA = parseInt(a.name.replace(/\D/g, ''), 10) || 0;
-                          const numB = parseInt(b.name.replace(/\D/g, ''), 10) || 0;
-                          return numB - numA;
-                        })
-                        .map((b) => {
-                          const dept = departments.find(d => d.id === b.departmentId);
-                          return (
-                            <option key={b.id} value={b.id}>{b.name} ({dept ? dept.code : 'Unknown'})</option>
-                          );
-                        })}
-                    </select>
-                  </div>
+                    ))}
+                  </select>
 
-                  {selectedBatchId && (
-                    <div className="space-y-4 animate-fade-in">
-                      {/* Checkbox checklist */}
-                      <div className="space-y-2">
-                        <div className="flex justify-between items-center">
-                          <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Select Semesters to Assign</label>
-                          <span className="text-[10px] text-slate-400">Green = Already Assigned</span>
-                        </div>
-                        
-                        <div className="grid grid-cols-2 gap-2 max-h-56 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200/50 dark:border-slate-800/50">
-                          {allSemesterOptions.map((name) => {
-                            const matchingSemDoc = semesters.find(s => s.batchId === selectedBatchId && s.name.toLowerCase() === name.toLowerCase());
-                            const isAssigned = !!matchingSemDoc;
-                            const isChecked = checkedSemesterNames.includes(name);
+                  <select
+                    value={selectedBatchId}
+                    onChange={(e) => {
+                      setSelectedBatchId(e.target.value);
+                      setCheckedSemesterNames([]);
+                    }}
+                    disabled={!selectedDeptForSemester}
+                    className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 disabled:opacity-50 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                  >
+                    <option value="">
+                      {!selectedDeptForSemester ? "Select Department First" : "2. Pick Target Batch *"}
+                    </option>
+                    {batches
+                      .filter(b => b.departmentId === selectedDeptForSemester)
+                      .sort((a, b) => {
+                        const numA = parseInt(a.name.replace(/\D/g, ''), 10) || 0;
+                        const numB = parseInt(b.name.replace(/\D/g, ''), 10) || 0;
+                        return numB - numA;
+                      })
+                      .map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                  </select>
+                </div>
 
-                            return (
-                              <label
-                                key={name}
-                                className={`flex items-center gap-2.5 p-2 rounded-lg border text-xs cursor-pointer transition-all ${
-                                  isAssigned
-                                    ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-600 dark:text-emerald-400 font-semibold hover:bg-emerald-500/15'
-                                    : isChecked
-                                      ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-600 dark:text-indigo-400 font-semibold'
-                                      : 'bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-900/60'
-                                }`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={isAssigned || isChecked}
-                                  onChange={() => {
-                                    if (isAssigned && matchingSemDoc) {
-                                      handleDeleteSemester(matchingSemDoc.id);
-                                      return;
-                                    }
-                                    if (isChecked) {
-                                      setCheckedSemesterNames(prev => prev.filter(n => n !== name));
-                                    } else {
-                                      setCheckedSemesterNames(prev => [...prev, name]);
-                                    }
-                                  }}
-                                  className="rounded border-slate-300 dark:border-slate-700 text-indigo-600 focus:ring-indigo-500"
-                                />
-                                <span className="truncate flex-1">{name}</span>
-                                {isAssigned && (
-                                  <span className="text-[9px] font-semibold bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 px-1.5 py-0.5 rounded-md">
-                                    Assigned
-                                  </span>
-                                )}
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      {/* Add Custom Semester Option */}
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Or Add Custom Semester Name</label>
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            placeholder="e.g. Special Fall 2026, Summer 2028"
-                            value={customSemesterName}
-                            onChange={(e) => setCustomSemesterName(e.target.value)}
-                            className="flex-1 px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                handleAddCustomOption();
-                              }
-                            }}
-                          />
-                          <button
-                            type="button"
-                            onClick={handleAddCustomOption}
-                            className="px-3 py-1.5 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-semibold"
-                          >
-                            Add Option
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Actions */}
-                      <div className="pt-2">
+                {/* Semester Assignment Checklist */}
+                {selectedBatchId ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-500 uppercase tracking-wider text-[10px]">
+                        Available Semesters
+                      </span>
+                      <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={handleCreateSemester}
-                          disabled={checkedSemesterNames.length === 0 || isAssigningSemesters}
-                          className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2.5 rounded-xl flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10 hover:shadow-indigo-600/20 active:scale-98 disabled:opacity-50 transition-all"
+                          onClick={() => {
+                            const unassigned = allSemesterOptions.filter(name => 
+                              !semesters.some(s => s.batchId === selectedBatchId && s.name.toLowerCase() === name.toLowerCase())
+                            );
+                            setCheckedSemesterNames(unassigned);
+                          }}
+                          className="text-[10px] font-bold text-violet-600 dark:text-violet-400 hover:underline cursor-pointer"
                         >
-                          {isAssigningSemesters ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Plus className="w-4 h-4" />
-                          )}
-                          Assign Selected Semesters ({checkedSemesterNames.length})
+                          Select All
+                        </button>
+                        <span>•</span>
+                        <button
+                          type="button"
+                          onClick={() => setCheckedSemesterNames([])}
+                          className="text-[10px] font-bold text-slate-400 hover:text-slate-600 cursor-pointer"
+                        >
+                          Clear
                         </button>
                       </div>
                     </div>
-                  )}
 
-                  {!selectedBatchId && (
-                    <div className="text-center py-8 text-slate-400 dark:text-slate-600 bg-slate-50 dark:bg-slate-900/40 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800">
-                      <p className="text-xs">Please select a target batch to configure semesters</p>
-                    </div>
-                  )}
-                </div>
+                    {/* Checkbox grid */}
+                    <div className="grid grid-cols-2 gap-2 max-h-52 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-900/40 rounded-2xl border border-slate-200/60 dark:border-slate-800/60">
+                      {allSemesterOptions.map((name) => {
+                        const matchingSemDoc = semesters.find(s => s.batchId === selectedBatchId && s.name.toLowerCase() === name.toLowerCase());
+                        const isAssigned = !!matchingSemDoc;
+                        const isChecked = checkedSemesterNames.includes(name);
 
-                {/* Displaying assigned list */}
-                {selectedBatchId && (
-                  <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-900/60">
-                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                      Assigned Folders for this Batch ({semesters.filter((s) => s.batchId === selectedBatchId).length})
-                    </h4>
-                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                      {semesters
-                        .filter((s) => s.batchId === selectedBatchId)
-                        .map((sem) => {
-                          const b = batches.find(batch => batch.id === sem.batchId);
-                          const d = b ? departments.find(dept => dept.id === b.departmentId) : null;
-                          return (
-                            <div key={sem.id} className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/40 border border-slate-200/50 dark:border-slate-800/50 rounded-xl animate-fade-in">
-                              <div>
-                                <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{sem.name}</p>
-                                <p className="text-xs text-slate-500">
-                                  {d ? d.code : 'Unknown'} - {b ? b.name : 'Unknown'}
-                                </p>
-                              </div>
-                              <button
-                                onClick={() => handleDeleteSemester(sem.id)}
-                                className="p-1 text-slate-400 hover:text-red-500 transition-colors"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          );
-                        })}
+                        return (
+                          <label
+                            key={name}
+                            className={`flex items-center gap-2 p-2 rounded-xl text-xs cursor-pointer border transition-all ${
+                              isAssigned
+                                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400 font-semibold'
+                                : isChecked
+                                ? 'bg-violet-500/10 border-violet-500/40 text-violet-600 dark:text-violet-400 font-semibold'
+                                : 'bg-white dark:bg-slate-950 border-slate-200/70 dark:border-slate-800 text-slate-700 dark:text-slate-300'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isAssigned || isChecked}
+                              onChange={() => {
+                                if (isAssigned && matchingSemDoc) {
+                                  handleDeleteSemester(matchingSemDoc.id);
+                                  return;
+                                }
+                                if (isChecked) {
+                                  setCheckedSemesterNames(prev => prev.filter(n => n !== name));
+                                } else {
+                                  setCheckedSemesterNames(prev => [...prev, name]);
+                                }
+                              }}
+                              className="rounded border-slate-300 text-violet-600 focus:ring-violet-500 shrink-0"
+                            />
+                            <span className="truncate flex-1 text-[11px]">{name}</span>
+                            {isAssigned && (
+                              <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+                                Assigned
+                              </span>
+                            )}
+                          </label>
+                        );
+                      })}
                     </div>
+
+                    {/* Custom Semester option */}
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Add custom name (e.g. Special Fall 2026)"
+                        value={customSemesterName}
+                        onChange={(e) => setCustomSemesterName(e.target.value)}
+                        className="flex-1 px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAddCustomOption();
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddCustomOption}
+                        className="px-3 py-1.5 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-semibold cursor-pointer"
+                      >
+                        Add
+                      </button>
+                    </div>
+
+                    {/* Commit Button */}
+                    <button
+                      type="button"
+                      onClick={() => handleCreateSemester()}
+                      disabled={checkedSemesterNames.length === 0 || isAssigningSemesters}
+                      className="w-full bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white font-bold text-xs py-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-all shadow-md shadow-violet-600/10 cursor-pointer"
+                    >
+                      {isAssigningSemesters ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Plus className="w-4 h-4" />
+                      )}
+                      Assign Selected Semesters ({checkedSemesterNames.length})
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-center py-12 text-slate-400 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
+                    <p className="text-xs">Select Department and Batch above to assign semesters</p>
                   </div>
                 )}
               </div>
-
             </div>
-          )}
 
-          {/* --- TAB: MANAGE PAPERS --- */}
-          {activeTab === 'questions' && (
-            <div className="bg-white dark:bg-slate-950 p-6 rounded-2xl border border-slate-200 dark:border-slate-900 space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                <div>
-                  <h3 className="text-lg font-semibold font-display">Manage All Questions</h3>
-                  <p className="text-xs text-slate-500">Edit course metadata, view logs, or delete incorrect papers</p>
-                </div>
-                <div className="relative w-full sm:w-72">
-                  <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-                    <Search className="w-4 h-4" />
-                  </span>
-                  <input
-                    type="text"
-                    placeholder="Search by Course Name, Code..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full pl-9 pr-3 py-1.5 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl"
-                  />
-                </div>
+          </div>
+        )}
+
+        {/* ----------------------------------------------------------------------- */}
+        {/* TAB 3: MANAGE QUESTION PAPERS (TABLE + QUICK PREVIEW MODAL)              */}
+        {/* ----------------------------------------------------------------------- */}
+        {activeTab === 'questions' && (
+          <div className="bg-white dark:bg-slate-950 p-6 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs space-y-6">
+            
+            {/* Header + Search & Filter Toolbar */}
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-indigo-500" />
+                  <span>Question Papers Repository</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Review student submissions, edit metadata, or purge invalid papers.
+                </p>
               </div>
 
-              {/* Paper Verification Status Tabs */}
-              <div className="flex flex-wrap items-center gap-1 bg-slate-50 dark:bg-slate-900 p-1 rounded-xl w-fit border border-slate-100 dark:border-slate-900">
+              {/* Search Bar */}
+              <div className="relative w-full lg:w-80">
+                <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Search by Course, Code, Instructor..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 text-xs sm:text-sm bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+              </div>
+            </div>
+
+            {/* Filter Ribbon: Status + Department + Exam Type */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+              {/* Status Segmented Buttons */}
+              <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-100 dark:bg-slate-900 rounded-2xl border border-slate-200/50 dark:border-slate-800/50">
                 {(['pending', 'published', 'rejected', 'all'] as const).map((status) => {
                   const count = status === 'all' 
                     ? questions.length 
@@ -1578,18 +2009,25 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
                     ? questions.filter(q => q.status === 'published' || !q.status).length
                     : questions.filter(q => q.status === status).length;
                   
+                  const isCurrent = paperStatusFilter === status;
                   return (
                     <button
                       key={status}
                       onClick={() => setPaperStatusFilter(status)}
-                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold capitalize transition-all ${
-                        paperStatusFilter === status
-                          ? 'bg-white dark:bg-slate-950 text-slate-950 dark:text-white shadow-sm border border-slate-200/50 dark:border-slate-800'
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold capitalize transition-all cursor-pointer flex items-center gap-1.5 ${
+                        isCurrent
+                          ? 'bg-white dark:bg-slate-950 text-slate-900 dark:text-white shadow-xs border border-slate-200/60 dark:border-slate-800'
                           : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
                       }`}
                     >
-                      {status === 'published' ? 'Verified & Published' : status === 'pending' ? 'Pending Verification' : status}
-                      <span className="ml-1.5 px-1.5 py-0.5 text-[10px] bg-slate-200/60 dark:bg-slate-800 rounded-full font-mono">
+                      <span>
+                        {status === 'published' ? 'Verified' : status === 'pending' ? 'Pending Review' : status}
+                      </span>
+                      <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
+                        status === 'pending' && count > 0 
+                          ? 'bg-amber-500 text-white' 
+                          : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                      }`}>
                         {count}
                       </span>
                     </button>
@@ -1597,968 +2035,882 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
                 })}
               </div>
 
-              <div className="overflow-x-auto rounded-xl border border-slate-200/80 dark:border-slate-800/80">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="bg-slate-50 dark:bg-slate-900 text-slate-500 border-b border-slate-200/80 dark:border-slate-800/80">
-                      <th className="p-4 font-semibold">Course Code & Name</th>
-                      <th className="p-4 font-semibold">Uploader</th>
-                      <th className="p-4 font-semibold">Type</th>
-                      <th className="p-4 font-semibold">Verification Status</th>
-                      <th className="p-4 font-semibold">Views/DLs</th>
-                      <th className="p-4 font-semibold">Reports</th>
-                      <th className="p-4 font-semibold text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-900">
-                    {filteredQuestions.map((q) => (
-                      <tr key={q.id} className="hover:bg-slate-50/55 dark:hover:bg-slate-900/30 transition-colors">
+              {/* Department & Exam Dropdowns */}
+              <div className="flex items-center gap-2">
+                <select
+                  value={paperDeptFilter}
+                  onChange={(e) => setPaperDeptFilter(e.target.value)}
+                  className="px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none"
+                >
+                  <option value="all">All Departments</option>
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>{d.code}</option>
+                  ))}
+                </select>
+
+                <select
+                  value={paperExamFilter}
+                  onChange={(e) => setPaperExamFilter(e.target.value)}
+                  className="px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none"
+                >
+                  <option value="all">All Terms</option>
+                  <option value="Mid">Mid Term</option>
+                  <option value="Final">Final Term</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Questions Table */}
+            <div className="overflow-x-auto rounded-2xl border border-slate-200/80 dark:border-slate-800/80">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-50/80 dark:bg-slate-900/80 text-slate-500 border-b border-slate-200/80 dark:border-slate-800/80 font-bold uppercase tracking-wider text-[10px]">
+                    <th className="p-4">Course Code & Title</th>
+                    <th className="p-4">Uploader</th>
+                    <th className="p-4">Hierarchy</th>
+                    <th className="p-4">Term</th>
+                    <th className="p-4">Status</th>
+                    <th className="p-4">Views / DLs</th>
+                    <th className="p-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-900">
+                  {filteredQuestions.map((q) => {
+                    const dept = departments.find(d => d.id === q.departmentId);
+                    const isPending = q.status === 'pending';
+                    const isRejected = q.status === 'rejected';
+
+                    return (
+                      <tr key={q.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-900/40 transition-colors">
+                        {/* Course Code & Name */}
                         <td className="p-4">
-                          <p className="font-semibold text-slate-800 dark:text-slate-200">{q.courseCode}</p>
-                          <p className="text-xs text-slate-500">{q.courseName}</p>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 px-2 py-0.5 rounded-md">
+                              {q.courseCode}
+                            </span>
+                            <span className="font-bold text-slate-900 dark:text-white line-clamp-1">
+                              {q.courseName}
+                            </span>
+                          </div>
+                          {q.teacher && (
+                            <p className="text-[10px] text-slate-400 mt-0.5">Instructor: {q.teacher}</p>
+                          )}
                         </td>
-                        <td className="p-4 text-slate-600 dark:text-slate-400 font-mono text-xs">
-                          @{q.uploadedByUsername}
+
+                        {/* Uploader */}
+                        <td className="p-4 font-mono text-slate-600 dark:text-slate-400">
+                          @{users.find(u => u.uid === q.uploadedByUID)?.username || (currentUser && currentUser.uid === q.uploadedByUID ? currentUser.username : q.uploadedByUsername)}
                         </td>
+
+                        {/* Hierarchy */}
                         <td className="p-4">
-                          <span className={`px-2 py-0.5 text-[10px] font-semibold rounded-full ${
+                          <span className="font-semibold text-slate-700 dark:text-slate-300">
+                            {dept ? dept.code : 'General'}
+                          </span>
+                        </td>
+
+                        {/* Term */}
+                        <td className="p-4">
+                          <span className={`px-2 py-0.5 rounded-md font-bold text-[10px] uppercase ${
                             q.examType === 'Mid' 
-                              ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400' 
-                              : 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400'
+                              ? 'bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300' 
+                              : 'bg-emerald-100 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300'
                           }`}>
                             {q.examType}
                           </span>
                         </td>
+
+                        {/* Status */}
                         <td className="p-4">
-                          {!q.status || q.status === 'published' ? (
-                            <span className="px-2.5 py-1 text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 rounded-lg uppercase tracking-wider border border-emerald-100 dark:border-emerald-900/40">
+                          {isPending ? (
+                            <span className="px-2.5 py-1 text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 rounded-lg uppercase tracking-wider border border-amber-500/20 flex items-center gap-1 w-fit animate-pulse">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                              Pending
+                            </span>
+                          ) : isRejected ? (
+                            <span className="px-2.5 py-1 text-[10px] font-bold bg-rose-500/10 text-rose-600 dark:text-rose-400 rounded-lg uppercase tracking-wider border border-rose-500/20 w-fit">
+                              Rejected
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-1 text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-lg uppercase tracking-wider border border-emerald-500/20 flex items-center gap-1 w-fit">
+                              <CheckCircle2 className="w-3 h-3" />
                               Verified
                             </span>
-                          ) : q.status === 'pending' ? (
-                            <span className="px-2.5 py-1 text-[10px] font-bold bg-amber-50 dark:bg-amber-950/20 text-amber-600 dark:text-amber-400 rounded-lg uppercase tracking-wider border border-amber-100 dark:border-amber-900/40 animate-pulse">
-                              Pending Review
-                            </span>
-                          ) : (
-                            <div className="space-y-1">
-                              <span className="px-2.5 py-1 text-[10px] font-bold bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 rounded-lg uppercase tracking-wider border border-rose-100 dark:border-rose-900/40">
-                                Rejected
-                              </span>
-                              {q.verificationFeedback && (
-                                <p className="text-[10px] text-slate-500 dark:text-slate-400 max-w-xs italic line-clamp-1" title={q.verificationFeedback}>
-                                  Reason: "{q.verificationFeedback}"
-                                </p>
-                              )}
-                            </div>
                           )}
                         </td>
-                        <td className="p-4 font-mono text-xs text-slate-500">
-                          <span className="inline-flex items-center gap-1.5">
-                            <Eye className="w-3.5 h-3.5" />
-                            <span>{q.views}</span>
-                            <span>/</span>
-                            <Download className="w-3.5 h-3.5" />
-                            <span>{q.downloads}</span>
-                          </span>
-                        </td>
-                        <td className="p-4">
-                          {q.reportCount > 0 ? (
-                            <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400 text-xs font-semibold">
-                              <AlertTriangle className="w-3.5 h-3.5" />
-                              {q.reportCount} reports
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 text-xs">Clean</span>
-                          )}
-                        </td>
-                        <td className="p-4 text-right space-x-2">
-                          {q.status === 'pending' && (
-                            <div className="inline-flex gap-1.5 mr-2">
-                              <button
-                                disabled={verifyingPaperId === q.id}
-                                onClick={() => promptFeedbackAndVerify(q.id, 'published')}
-                                className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition-all inline-flex items-center gap-1 shadow-sm"
-                                title="Approve and Publish Paper"
-                              >
-                                {verifyingPaperId === q.id ? (
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                ) : (
-                                  <Check className="w-3.5 h-3.5" />
-                                )}
-                                <span>Approve</span>
-                              </button>
-                              <button
-                                disabled={verifyingPaperId === q.id}
-                                onClick={() => promptFeedbackAndVerify(q.id, 'rejected')}
-                                className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition-all inline-flex items-center gap-1 shadow-sm"
-                                title="Reject and Hide Paper"
-                              >
-                                {verifyingPaperId === q.id ? (
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                ) : (
-                                  <span>Reject</span>
-                                )}
-                              </button>
-                            </div>
-                          )}
-                          <button
-                            onClick={() => {
-                              setEditingQuestion(q);
-                              setIsEditModalOpen(true);
-                            }}
-                            className="p-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 rounded-lg text-slate-700 dark:text-slate-300 transition-colors inline-flex items-center align-middle"
-                            title="Edit paper details"
-                          >
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => onNavigateToQuestion(q.id)}
-                            className="p-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 rounded-lg text-slate-700 dark:text-slate-300 transition-colors inline-flex items-center align-middle"
-                            title="View paper"
-                          >
-                            <Eye className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteQuestion(q.id)}
-                            className="p-1.5 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-950/60 text-red-600 rounded-lg transition-colors inline-flex items-center align-middle"
-                            title="Delete permanently"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                    {filteredQuestions.length === 0 && (
-                      <tr>
-                        <td colSpan={6} className="text-center p-8 text-slate-500">
-                          No question papers match your filter.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
 
-          {/* --- TAB: MANAGE USERS --- */}
-          {activeTab === 'users' && (
-            <div className="bg-white dark:bg-slate-950 p-6 rounded-2xl border border-slate-200 dark:border-slate-900 space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                <div>
-                  <h3 className="text-lg font-semibold font-display">University Community Users</h3>
-                  <p className="text-xs text-slate-500">Audit user profiles, upload statistics, and manage bans</p>
-                </div>
-                <div className="relative w-full sm:w-72">
-                  <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-                    <Search className="w-4 h-4" />
-                  </span>
+                        {/* Views / DLs */}
+                        <td className="p-4 font-mono text-[11px] text-slate-500">
+                          {q.views || 0} / {q.downloads || 0}
+                        </td>
+
+                        {/* Action buttons */}
+                        <td className="p-4 text-right">
+                          <div className="inline-flex items-center gap-1.5">
+                            {/* Quick In-Place Preview Button */}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenPreview(q)}
+                              className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400 font-bold rounded-xl flex items-center gap-1 transition-colors cursor-pointer"
+                              title="Quick in-place preview"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Preview</span>
+                            </button>
+
+                            {/* Approve / Reject buttons if pending */}
+                            {isPending && (
+                              <>
+                                <button
+                                  disabled={verifyingPaperId === q.id}
+                                  onClick={() => promptFeedbackAndVerify(q.id, 'published')}
+                                  className="p-1.5 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 rounded-xl transition-colors cursor-pointer"
+                                  title="Approve paper"
+                                >
+                                  {verifyingPaperId === q.id ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <Check className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                                <button
+                                  disabled={verifyingPaperId === q.id}
+                                  onClick={() => promptFeedbackAndVerify(q.id, 'rejected')}
+                                  className="p-1.5 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 rounded-xl transition-colors cursor-pointer"
+                                  title="Reject paper"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </>
+                            )}
+
+                            {/* Edit Button */}
+                            <button
+                              onClick={() => {
+                                setEditingQuestion(q);
+                                setIsEditModalOpen(true);
+                              }}
+                              className="p-1.5 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                              title="Edit metadata"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Delete Button */}
+                            <button
+                              onClick={() => handleDeleteQuestion(q.id)}
+                              className="p-1.5 text-slate-400 hover:text-red-500 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors"
+                              title="Delete permanently"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {filteredQuestions.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="text-center p-12 text-slate-400">
+                        No question papers found matching your current filter.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+          </div>
+        )}
+
+        {/* ----------------------------------------------------------------------- */}
+        {/* TAB 4: FACULTY ROSTER HUB                                               */}
+        {/* ----------------------------------------------------------------------- */}
+        {activeTab === 'faculties' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            {/* Add or Edit Faculty Form (Left Col) */}
+            <div className="lg:col-span-1 bg-white dark:bg-slate-950 p-6 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs h-fit space-y-4">
+              <div className="flex items-center justify-between">
+                <h4 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                  <GraduationCap className="w-4 h-4 text-indigo-500" />
+                  <span>{editingFaculty ? 'Edit Faculty Profile' : 'Add New Faculty Member'}</span>
+                </h4>
+                {editingFaculty && (
+                  <button
+                    type="button"
+                    onClick={() => setEditingFaculty(null)}
+                    className="text-xs font-bold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+
+              <form onSubmit={editingFaculty ? handleUpdateFaculty : handleAddFaculty} className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Faculty Name *</label>
                   <input
                     type="text"
-                    placeholder="Search by Username, Email..."
+                    value={editingFaculty ? editFacultyName : newFacultyName}
+                    onChange={(e) => editingFaculty ? setEditFacultyName(e.target.value) : setNewFacultyName(e.target.value)}
+                    placeholder="e.g. Dr. John Doe"
+                    className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Designation *</label>
+                  <input
+                    type="text"
+                    value={editingFaculty ? editFacultyDesignation : newFacultyDesignation}
+                    onChange={(e) => editingFaculty ? setEditFacultyDesignation(e.target.value) : setNewFacultyDesignation(e.target.value)}
+                    placeholder="e.g. Professor & Head of CSE"
+                    className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Department *</label>
+                  <select
+                    value={editingFaculty ? editFacultyDeptId : newFacultyDeptId}
+                    onChange={(e) => editingFaculty ? setEditFacultyDeptId(e.target.value) : setNewFacultyDeptId(e.target.value)}
+                    className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    required
+                  >
+                    <option value="">Select Department</option>
+                    {departments.map((dept) => (
+                      <option key={dept.id} value={dept.id}>
+                        {dept.name} ({dept.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Photo Dropzone & Preview */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <Camera className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>Portrait Photo (Optional)</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (editingFaculty) setShowEditManualUrlInput(!showEditManualUrlInput);
+                        else setShowManualUrlInput(!showManualUrlInput);
+                      }}
+                      className="text-[10px] text-indigo-600 dark:text-indigo-400 hover:underline font-semibold cursor-pointer"
+                    >
+                      Paste URL
+                    </button>
+                  </div>
+
+                  {/* Photo Preview if loaded */}
+                  {(editingFaculty ? editFacultyImgUrl : newFacultyImgUrl) ? (
+                    <div className="p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <img
+                          src={formatImageUrl(editingFaculty ? editFacultyImgUrl : newFacultyImgUrl)}
+                          alt="Faculty"
+                          onError={handleImageError}
+                          className="w-12 h-12 rounded-xl object-cover border border-slate-200 dark:border-slate-800 shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-slate-900 dark:text-white truncate">Photo Uploaded</p>
+                          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" /> Ready
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (editingFaculty) setEditFacultyImgUrl('');
+                          else setNewFacultyImgUrl('');
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-red-500 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <label
+                      htmlFor="faculty-photo-upload-input"
+                      className="w-full border-2 border-dashed border-slate-300 dark:border-slate-800 hover:border-indigo-500 rounded-2xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer transition-colors bg-slate-50/50 dark:bg-slate-900/40"
+                    >
+                      {(editingFaculty ? isUploadingEditPhoto : isUploadingPhoto) ? (
+                        <div className="flex flex-col items-center gap-1.5 py-1 text-indigo-600 dark:text-indigo-400">
+                          <Loader2 className="w-6 h-6 animate-spin" />
+                          <span className="text-xs font-bold">Uploading to cloud...</span>
+                        </div>
+                      ) : (
+                        <>
+                          <Upload className="w-5 h-5 text-indigo-500" />
+                          <p className="text-xs font-bold text-slate-700 dark:text-slate-300">Choose portrait photo</p>
+                          <p className="text-[10px] text-slate-400">JPG, PNG, WebP up to 10MB</p>
+                        </>
+                      )}
+                      <input
+                        id="faculty-photo-upload-input"
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          if (e.target.files?.[0]) {
+                            handleDirectFacultyPhotoUpload(e.target.files[0], !!editingFaculty);
+                          }
+                        }}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
+
+                  {/* Manual URL input fallback */}
+                  {((editingFaculty ? showEditManualUrlInput : showManualUrlInput) || 
+                    ((editingFaculty ? editFacultyImgUrl : newFacultyImgUrl) && !(editingFaculty ? editFacultyImgUrl : newFacultyImgUrl).includes('ibb.co'))) && (
+                    <input
+                      type="url"
+                      value={editingFaculty ? editFacultyImgUrl : newFacultyImgUrl}
+                      onChange={(e) => editingFaculty ? setEditFacultyImgUrl(e.target.value) : setNewFacultyImgUrl(e.target.value)}
+                      placeholder="Paste image URL (https://...)"
+                      className="w-full px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl"
+                    />
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Contact Email (Optional)</label>
+                  <input
+                    type="email"
+                    value={editingFaculty ? editFacultyEmail : newFacultyEmail}
+                    onChange={(e) => editingFaculty ? setEditFacultyEmail(e.target.value) : setNewFacultyEmail(e.target.value)}
+                    placeholder="e.g. name@uttarauniversity.edu.bd"
+                    className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Phone Number (Optional)</label>
+                  <input
+                    type="tel"
+                    value={editingFaculty ? editFacultyPhone : newFacultyPhone}
+                    onChange={(e) => editingFaculty ? setEditFacultyPhone(e.target.value) : setNewFacultyPhone(e.target.value)}
+                    placeholder="e.g. +880 1700-000000"
+                    className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isAddingFaculty || isUpdatingFaculty}
+                  className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-lg shadow-indigo-600/15 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  {(isAddingFaculty || isUpdatingFaculty) ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : editingFaculty ? (
+                    <Check className="w-4 h-4" />
+                  ) : (
+                    <Plus className="w-4 h-4" />
+                  )}
+                  <span>{editingFaculty ? 'Save Faculty Profile' : 'Add Faculty Member'}</span>
+                </button>
+              </form>
+            </div>
+
+            {/* Faculty Directory (Right 2 Cols) */}
+            <div className="lg:col-span-2 bg-white dark:bg-slate-950 p-6 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-white">
+                    Faculty Directory ({filteredFaculties.length})
+                  </h4>
+                  <p className="text-xs text-slate-500">Filter by department or search by name</p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <select
+                    value={facultyDeptFilter}
+                    onChange={(e) => setFacultyDeptFilter(e.target.value)}
+                    className="px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none"
+                  >
+                    <option value="all">All Departments</option>
+                    {departments.map((d) => (
+                      <option key={d.id} value={d.id}>{d.code}</option>
+                    ))}
+                  </select>
+
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                    <input
+                      type="text"
+                      placeholder="Search faculty..."
+                      value={facultySearchTerm}
+                      onChange={(e) => setFacultySearchTerm(e.target.value)}
+                      className="pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white focus:outline-none w-36 sm:w-44"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Roster Cards Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 max-h-[580px] overflow-y-auto pr-1">
+                {filteredFaculties.map((f) => {
+                  const dept = departments.find(d => d.id === f.departmentId);
+                  return (
+                    <div key={f.id} className="p-4 rounded-2xl bg-slate-50/70 dark:bg-slate-900/50 border border-slate-200/60 dark:border-slate-800/60 flex flex-col justify-between gap-3 group hover:border-slate-300 dark:hover:border-slate-700 transition-all">
+                      <div className="flex items-start gap-3">
+                        {f.imageUrl ? (
+                          <img
+                            src={formatImageUrl(f.imageUrl)}
+                            alt={f.name}
+                            onError={handleImageError}
+                            className="w-12 h-12 rounded-xl object-cover border border-slate-200 dark:border-slate-800 shrink-0"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-bold text-base flex items-center justify-center shrink-0 border border-indigo-200/50 dark:border-indigo-800/50">
+                            {f.name.charAt(0)}
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <span className="font-mono text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/80 text-indigo-600 dark:text-indigo-400">
+                            {dept ? dept.code : 'General'}
+                          </span>
+                          <h5 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white truncate mt-1">
+                            {f.name}
+                          </h5>
+                          <p className="text-[11px] text-slate-500 truncate">{f.designation}</p>
+
+                          <div className="flex items-center gap-1.5 text-amber-500 font-mono text-[11px] mt-1.5">
+                            <Star className="w-3 h-3 fill-amber-400 inline" />
+                            <span className="font-bold">{f.averageRating ? f.averageRating.toFixed(2) : '0.00'}</span>
+                            <span className="text-slate-400 text-[10px]">({f.totalRatingCount || 0} reviews)</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-200/40 dark:border-slate-800/40 text-[10px] text-slate-400">
+                        <div className="truncate">
+                          {f.email && <span className="mr-2">📧 {f.email}</span>}
+                          {f.phone && <span>📞 {f.phone}</span>}
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => startEditingFaculty(f)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-500 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
+                            title="Edit faculty"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteFaculty(f.id, f.name)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors"
+                            title="Delete faculty"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {filteredFaculties.length === 0 && (
+                  <div className="col-span-full py-12 text-center text-slate-400 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
+                    <p className="text-xs">No faculty members found matching your search.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* ----------------------------------------------------------------------- */}
+        {/* TAB 5: STUDENT COMMUNITY & ROLE OVERSEER                                */}
+        {/* ----------------------------------------------------------------------- */}
+        {activeTab === 'users' && (
+          <div className="bg-white dark:bg-slate-950 p-6 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs space-y-6">
+            
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Users className="w-5 h-5 text-indigo-500" />
+                  <span>Student Community Accounts</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Promote students to moderators, audit contribution love points, or ban abusive accounts.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5">
+                <select
+                  value={userRoleFilter}
+                  onChange={(e) => setUserRoleFilter(e.target.value)}
+                  className="px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none"
+                >
+                  <option value="all">All Roles</option>
+                  <option value="user">Students</option>
+                  <option value="moderator">Moderators</option>
+                  <option value="super_admin">Super Admins</option>
+                </select>
+
+                <select
+                  value={userStatusFilter}
+                  onChange={(e) => setUserStatusFilter(e.target.value)}
+                  className="px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none"
+                >
+                  <option value="all">All Status</option>
+                  <option value="active">Active Only</option>
+                  <option value="banned">Banned Only</option>
+                </select>
+
+                <div className="relative w-full sm:w-64">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Search by username or email..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full pl-9 pr-3 py-1.5 text-sm bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl"
+                    className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white focus:outline-none"
                   />
                 </div>
               </div>
-
-              <div className="overflow-x-auto rounded-xl border border-slate-200/80 dark:border-slate-800/80">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="bg-slate-50 dark:bg-slate-900 text-slate-500 border-b border-slate-200/80 dark:border-slate-800/80">
-                      <th className="p-4 font-semibold">Student Account</th>
-                      <th className="p-4 font-semibold">Joined Date</th>
-                      <th className="p-4 font-semibold">Uploads</th>
-                      <th className="p-4 font-semibold">Likes Received</th>
-                      <th className="p-4 font-semibold">System Status</th>
-                      <th className="p-4 font-semibold">Role / Privileges</th>
-                      <th className="p-4 font-semibold text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-900">
-                    {filteredUsers.map((u) => {
-                      const isBanned = (u as any).status === 'banned';
-                      const isSelf = u.uid === currentUser.uid;
-                      return (
-                        <tr key={u.uid} className="hover:bg-slate-50/55 dark:hover:bg-slate-900/30 transition-colors">
-                          <td className="p-4 flex items-center gap-3">
-                            <img src={u.photoURL} alt={u.username} className="w-8 h-8 rounded-full border border-slate-200 dark:border-slate-800" />
-                            <div>
-                              <p className="font-semibold text-slate-800 dark:text-slate-200">@{u.username}</p>
-                              <p className="text-xs text-slate-500">{u.email}</p>
-                            </div>
-                          </td>
-                          <td className="p-4 text-slate-600 dark:text-slate-400 font-mono text-xs">
-                            {new Date(u.createdAt).toLocaleDateString()}
-                          </td>
-                          <td className="p-4 font-mono text-xs">{u.uploadCount || 0}</td>
-                          <td className="p-4 font-mono text-xs text-rose-500">
-                            <span className="inline-flex items-center gap-1">
-                              <Heart className="w-3.5 h-3.5 fill-rose-500 text-rose-500" />
-                              <span>{u.likesReceived || 0}</span>
-                            </span>
-                          </td>
-                          <td className="p-4">
-                            {isBanned ? (
-                              <span className="px-2.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 rounded-full dark:bg-red-950/20 dark:text-red-400">
-                                Banned
-                              </span>
-                            ) : (
-                              <span className="px-2.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-600 rounded-full dark:bg-emerald-950/20 dark:text-emerald-400">
-                                Active Student
-                              </span>
-                            )}
-                          </td>
-                          <td className="p-4">
-                            {isSelf ? (
-                              <span className="px-2.5 py-1 text-[10px] font-bold bg-indigo-50 text-indigo-600 rounded-lg dark:bg-indigo-950/20 dark:text-indigo-400 uppercase">
-                                Super Admin
-                              </span>
-                            ) : currentUser.role === 'super_admin' ? (
-                              <select
-                                value={u.role || 'user'}
-                                onChange={(e) => handleChangeUserRole(u.uid, e.target.value as any)}
-                                className="px-2.5 py-1 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl font-semibold text-slate-800 dark:text-slate-200 focus:outline-none"
-                              >
-                                <option value="user">Student (User)</option>
-                                <option value="moderator">Moderator (Semi-Admin)</option>
-                                <option value="super_admin">Super Admin</option>
-                              </select>
-                            ) : (
-                              <span className={`px-2.5 py-1 text-[10px] font-bold rounded-lg uppercase ${
-                                u.role === 'super_admin' 
-                                  ? 'bg-red-50 text-red-600 dark:bg-red-950/20 dark:text-red-400' 
-                                  : u.role === 'moderator'
-                                  ? 'bg-amber-50 text-amber-600 dark:bg-amber-950/20 dark:text-amber-400'
-                                  : 'bg-slate-100 text-slate-600 dark:bg-slate-900 dark:text-slate-400'
-                              }`}>
-                                {u.role === 'super_admin' ? 'Super Admin' : u.role === 'moderator' ? 'Moderator' : 'Student'}
-                              </span>
-                            )}
-                          </td>
-                          <td className="p-4 text-right">
-                            {isSelf ? (
-                              <span className="text-xs text-slate-400">Self (You)</span>
-                            ) : (
-                              <button
-                                onClick={() => handleToggleBanUser(u.uid, isBanned)}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 ml-auto transition-colors ${
-                                  isBanned 
-                                    ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 hover:bg-emerald-100' 
-                                    : 'bg-red-50 dark:bg-red-950/30 text-red-600 hover:bg-red-100'
-                                }`}
-                              >
-                                {isBanned ? (
-                                  <>
-                                    <Unlock className="w-3.5 h-3.5" />
-                                    Unban
-                                  </>
-                                ) : (
-                                  <>
-                                    <Lock className="w-3.5 h-3.5" />
-                                    Ban Student
-                                  </>
-                                )}
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
             </div>
-          )}
 
-          {/* --- TAB: REPORTS --- */}
-          {activeTab === 'reports' && (
-            <div className="bg-white dark:bg-slate-950 p-6 rounded-2xl border border-slate-200 dark:border-slate-900 space-y-6">
-              <div>
-                <h3 className="text-lg font-semibold font-display">Moderation Reports Hub</h3>
-                <p className="text-xs text-slate-500">Verify user reports and flag incorrect/illegal papers</p>
-              </div>
+            {/* Users Table */}
+            <div className="overflow-x-auto rounded-2xl border border-slate-200/80 dark:border-slate-800/80">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-50/80 dark:bg-slate-900/80 text-slate-500 border-b border-slate-200/80 dark:border-slate-800/80 font-bold uppercase tracking-wider text-[10px]">
+                    <th className="p-4">Student Profile</th>
+                    <th className="p-4">Uploads</th>
+                    <th className="p-4">Love Received</th>
+                    <th className="p-4">Joined Date</th>
+                    <th className="p-4">Account Status</th>
+                    <th className="p-4">Role Privileges</th>
+                    <th className="p-4 text-right">Account Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-900">
+                  {filteredUsers.map((u) => {
+                    const isBanned = (u as any).status === 'banned';
+                    const isSelf = u.uid === currentUser?.uid;
 
-              <div className="space-y-4">
-                {reports.map((report) => (
+                    return (
+                      <tr key={u.uid} className="hover:bg-slate-50/60 dark:hover:bg-slate-900/40 transition-colors">
+                        {/* Profile Info */}
+                        <td className="p-4 flex items-center gap-3">
+                          <img
+                            src={u.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.username)}&background=random`}
+                            alt={u.username}
+                            className="w-9 h-9 rounded-full object-cover border border-slate-200 dark:border-slate-800"
+                          />
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-900 dark:text-white">@{u.username}</p>
+                            <p className="text-[10px] text-slate-400 truncate">{u.email}</p>
+                          </div>
+                        </td>
+
+                        {/* Uploads */}
+                        <td className="p-4 font-mono font-bold text-slate-700 dark:text-slate-300">
+                          {u.uploadCount || 0}
+                        </td>
+
+                        {/* Love Received */}
+                        <td className="p-4 font-mono text-rose-500 font-bold">
+                          <span className="flex items-center gap-1">
+                            <Heart className="w-3.5 h-3.5 fill-rose-500" />
+                            {u.likesReceived || 0}
+                          </span>
+                        </td>
+
+                        {/* Joined Date */}
+                        <td className="p-4 font-mono text-[11px] text-slate-400">
+                          {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : 'N/A'}
+                        </td>
+
+                        {/* System Status */}
+                        <td className="p-4">
+                          {isBanned ? (
+                            <span className="px-2.5 py-1 text-[10px] font-bold bg-rose-500/10 text-rose-600 dark:text-rose-400 rounded-lg uppercase tracking-wider border border-rose-500/20">
+                              Banned
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-1 text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-lg uppercase tracking-wider border border-emerald-500/20">
+                              Active Student
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Role Select */}
+                        <td className="p-4">
+                          {isSelf ? (
+                            <span className="px-2.5 py-1 text-[10px] font-bold bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded-lg uppercase border border-indigo-500/20">
+                              Super Admin (You)
+                            </span>
+                          ) : currentUser?.role === 'super_admin' ? (
+                            <select
+                              value={u.role || 'user'}
+                              onChange={(e) => handleChangeUserRole(u.uid, e.target.value as any)}
+                              className="px-2.5 py-1 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl font-bold text-slate-800 dark:text-slate-200 focus:outline-none"
+                            >
+                              <option value="user">Student</option>
+                              <option value="moderator">Moderator</option>
+                              <option value="super_admin">Super Admin</option>
+                            </select>
+                          ) : (
+                            <span className="text-[10px] font-bold uppercase text-slate-500">
+                              {u.role || 'Student'}
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Actions */}
+                        <td className="p-4 text-right">
+                          {isSelf ? (
+                            <span className="text-slate-400 text-xs">Self</span>
+                          ) : (
+                            <button
+                              onClick={() => handleToggleBanUser(u.uid, isBanned)}
+                              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer inline-flex items-center gap-1.5 ${
+                                isBanned
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 hover:bg-emerald-100'
+                                  : 'bg-rose-50 dark:bg-rose-950/40 text-rose-600 hover:bg-rose-100'
+                              }`}
+                            >
+                              {isBanned ? (
+                                <>
+                                  <Unlock className="w-3.5 h-3.5" />
+                                  <span>Unban</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Lock className="w-3.5 h-3.5" />
+                                  <span>Ban</span>
+                                </>
+                              )}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {filteredUsers.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="text-center p-12 text-slate-400">
+                        No students match your current search.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+          </div>
+        )}
+
+        {/* ----------------------------------------------------------------------- */}
+        {/* TAB 6: MODERATION REPORTS HUB                                           */}
+        {/* ----------------------------------------------------------------------- */}
+        {activeTab === 'reports' && (
+          <div className="bg-white dark:bg-slate-950 p-6 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs space-y-6">
+            <div>
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Flag className="w-5 h-5 text-red-500" />
+                <span>Moderation Reports Hub ({reports.length})</span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Investigate student flags regarding duplicate, incorrect, blurry, or copyright-infringing exam papers.
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              {reports.map((report) => {
+                const targetQ = questions.find(q => q.id === report.questionId);
+                return (
                   <div 
                     key={report.id} 
-                    className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-900/40 border border-slate-200/60 dark:border-slate-800/60 grid grid-cols-1 md:grid-cols-4 gap-4 items-center"
+                    className="p-5 rounded-3xl bg-slate-50 dark:bg-slate-900/40 border border-slate-200/80 dark:border-slate-800/80 flex flex-col md:flex-row md:items-center justify-between gap-4"
                   >
-                    <div className="md:col-span-2 space-y-1">
-                      <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-red-100 dark:bg-red-950 text-red-600 dark:text-red-400 rounded">
-                        Reason: {report.reason}
-                      </span>
-                      <h4 className="font-bold text-slate-800 dark:text-slate-200 text-sm mt-1">
-                        {report.courseCode} - {report.courseName}
-                      </h4>
-                      <p className="text-xs text-slate-600 dark:text-slate-400 italic">
-                        "{report.description || 'No description provided.'}"
+                    <div className="space-y-1.5 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-md bg-red-100 dark:bg-red-950 text-red-600 dark:text-red-400 border border-red-200/50 dark:border-red-900/50">
+                          {report.reason}
+                        </span>
+                        <span className="font-mono text-xs font-bold text-slate-900 dark:text-white">
+                          {report.courseCode} - {report.courseName}
+                        </span>
+                      </div>
+
+                      <p className="text-xs text-slate-700 dark:text-slate-300 italic">
+                        "{report.description || 'No additional details provided.'}"
                       </p>
+
                       <p className="text-[10px] text-slate-400 font-mono">
-                        Reported by @{report.reportedByUsername} on {new Date(report.reportedAt).toLocaleString()}
+                        Flagged by @{report.reportedByUsername} on {new Date(report.reportedAt).toLocaleString()}
                       </p>
                     </div>
 
-                    <div className="flex gap-2 justify-end md:col-span-2">
+                    <div className="flex items-center gap-2 shrink-0">
+                      {targetQ ? (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenPreview(targetQ)}
+                          className="px-3 py-1.5 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 rounded-xl text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Eye className="w-3.5 h-3.5" /> Preview Paper
+                        </button>
+                      ) : (
+                        <span className="text-[10px] text-slate-400 italic">Paper deleted</span>
+                      )}
+
                       <button
-                        onClick={() => onNavigateToQuestion(report.questionId)}
-                        className="px-3 py-1.5 bg-slate-200/70 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-xl text-xs font-semibold flex items-center gap-1 text-slate-700 dark:text-slate-300 transition-colors"
-                      >
-                        <Eye className="w-3.5 h-3.5" /> View Paper
-                      </button>
-                      <button
+                        type="button"
                         onClick={() => handleDismissReport(report.id)}
-                        className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/20 rounded-xl text-xs font-semibold flex items-center gap-1 text-emerald-600 dark:text-emerald-400 transition-colors"
+                        className="px-3.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                       >
-                        <Check className="w-3.5 h-3.5" /> Dismiss Report
+                        <Check className="w-3.5 h-3.5" /> Dismiss
                       </button>
+
                       <button
+                        type="button"
                         onClick={() => handleResolveReport(report.questionId, report.id)}
-                        className="px-3 py-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-950/20 rounded-xl text-xs font-semibold flex items-center gap-1 text-red-600 dark:text-red-400 transition-colors"
+                        className="px-3.5 py-1.5 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" /> Delete Paper
                       </button>
                     </div>
                   </div>
-                ))}
+                );
+              })}
 
-                {reports.length === 0 && (
-                  <div className="text-center py-12 bg-slate-50/50 dark:bg-slate-900/20 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
-                    <CheckCircle className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
-                    <h4 className="font-semibold text-sm">All Clean!</h4>
-                    <p className="text-xs text-slate-500 mt-1">No pending student moderation reports currently.</p>
-                  </div>
-                )}
-              </div>
+              {reports.length === 0 && (
+                <div className="text-center py-16 bg-slate-50/50 dark:bg-slate-900/20 border border-dashed border-slate-200 dark:border-slate-800 rounded-3xl">
+                  <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-white">Clean Moderation Queue</h4>
+                  <p className="text-xs text-slate-500 mt-1">No active reports from university students currently.</p>
+                </div>
+              )}
             </div>
-          )}
 
-          {/* --- TAB: FACULTIES --- */}
-          {activeTab === 'faculties' && (
-            <div className="space-y-6">
-              <div className="bg-white dark:bg-slate-950 p-6 rounded-2xl border border-slate-200 dark:border-slate-900">
-                <h3 className="text-lg font-semibold font-display flex items-center gap-2">
-                  <GraduationCap className="w-5 h-5 text-indigo-500" />
-                  <span>Faculty Management Hub</span>
-                </h3>
-                <p className="text-xs text-slate-500 mt-1">Add, filter, and remove faculty members of Uttara University.</p>
-              </div>
+          </div>
+        )}
 
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Add or Edit Faculty Form */}
-                <div className="lg:col-span-1 bg-white dark:bg-slate-950 p-6 rounded-2xl border border-slate-200 dark:border-slate-900 h-fit space-y-4">
-                  {editingFaculty ? (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <h4 className="font-bold text-sm text-slate-800 dark:text-slate-200">Edit Faculty</h4>
-                        <button
-                          type="button"
-                          onClick={() => setEditingFaculty(null)}
-                          className="text-xs font-semibold text-slate-400 hover:text-indigo-500 transition-colors"
-                        >
-                          Cancel Edit
-                        </button>
-                      </div>
-                      <form onSubmit={handleUpdateFaculty} className="space-y-4">
-                        <div className="space-y-1.5">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Faculty Name</label>
-                          <input
-                            type="text"
-                            value={editFacultyName}
-                            onChange={(e) => setEditFacultyName(e.target.value)}
-                            placeholder="e.g. Dr. John Doe"
-                            className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                            required
-                          />
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Designation</label>
-                          <input
-                            type="text"
-                            value={editFacultyDesignation}
-                            onChange={(e) => setEditFacultyDesignation(e.target.value)}
-                            placeholder="e.g. Professor / Associate Professor / Lecturer"
-                            className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                            required
-                          />
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Department</label>
-                          <select
-                            value={editFacultyDeptId}
-                            onChange={(e) => setEditFacultyDeptId(e.target.value)}
-                            className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                            required
-                          >
-                            <option value="">Select Department</option>
-                            {departments.map((dept) => (
-                              <option key={dept.id} value={dept.id}>
-                                {dept.name} ({dept.code})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                              <Camera className="w-3.5 h-3.5 text-indigo-500" />
-                              <span>Faculty Photo</span>
-                              <span className="text-slate-400 font-normal lowercase">(optional)</span>
-                            </label>
-                            <button
-                              type="button"
-                              onClick={() => setShowEditManualUrlInput(!showEditManualUrlInput)}
-                              className="text-[10px] text-indigo-600 dark:text-indigo-400 hover:underline font-semibold cursor-pointer"
-                            >
-                              {showEditManualUrlInput ? 'Hide URL field' : 'Paste URL instead'}
-                            </button>
-                          </div>
-
-                          {/* Live Photo Preview when selected/uploaded */}
-                          {editFacultyImgUrl ? (
-                            <div className="p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl flex items-center justify-between gap-3 shadow-xs">
-                              <div className="flex items-center gap-3 min-w-0">
-                                <div className="w-12 h-12 rounded-xl overflow-hidden border-2 border-indigo-500/20 bg-slate-200 dark:bg-slate-800 shrink-0 shadow-xs">
-                                  <img
-                                    src={formatImageUrl(editFacultyImgUrl)}
-                                    alt="Faculty portrait preview"
-                                    onError={handleImageError}
-                                    className="w-full h-full object-cover"
-                                  />
-                                </div>
-                                <div className="min-w-0">
-                                  <p className="text-xs font-bold text-slate-900 dark:text-white truncate">Photo Ready</p>
-                                  <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                                    <CheckCircle className="w-3 h-3" /> Ready
-                                  </p>
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <label
-                                  htmlFor="edit-faculty-direct-upload"
-                                  className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400 text-xs font-bold rounded-lg cursor-pointer transition-colors"
-                                >
-                                  Change
-                                </label>
-                                <button
-                                  type="button"
-                                  onClick={() => setEditFacultyImgUrl('')}
-                                  className="p-1 hover:bg-red-50 dark:hover:bg-red-950/50 text-slate-400 hover:text-red-500 rounded-lg transition-colors cursor-pointer"
-                                  title="Remove photo"
-                                >
-                                  <X className="w-4 h-4" />
-                                </button>
-                              </div>
-                              <input
-                                id="edit-faculty-direct-upload"
-                                type="file"
-                                accept="image/*"
-                                onChange={(e) => {
-                                  if (e.target.files?.[0]) {
-                                    handleDirectFacultyPhotoUpload(e.target.files[0], true);
-                                  }
-                                }}
-                                className="hidden"
-                              />
-                            </div>
-                          ) : (
-                            /* Direct Upload Dropzone Button */
-                            <div>
-                              <label
-                                htmlFor="edit-faculty-direct-upload"
-                                className={`w-full border-2 border-dashed rounded-2xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer transition-all ${
-                                  isUploadingEditPhoto
-                                    ? 'border-indigo-400 bg-indigo-50/50 dark:bg-indigo-950/20'
-                                    : 'border-slate-300 dark:border-slate-700 hover:border-indigo-500 bg-slate-50/60 dark:bg-slate-900/60 hover:bg-indigo-50/20 dark:hover:bg-indigo-950/10'
-                                }`}
-                              >
-                                {isUploadingEditPhoto ? (
-                                  <div className="flex flex-col items-center gap-1.5 py-1 text-indigo-600 dark:text-indigo-400">
-                                    <Loader2 className="w-6 h-6 animate-spin" />
-                                    <span className="text-xs font-bold">Uploading photo to cloud...</span>
-                                  </div>
-                                ) : (
-                                  <>
-                                    <div className="p-2.5 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 rounded-xl">
-                                      <Upload className="w-5 h-5" />
-                                    </div>
-                                    <div className="text-center">
-                                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                                        Direct Upload Faculty Photo
-                                      </p>
-                                      <p className="text-[10px] text-slate-400 mt-0.5">
-                                        Click to choose photo (JPG, PNG, WebP up to 10MB)
-                                      </p>
-                                    </div>
-                                  </>
-                                )}
-                                <input
-                                  id="edit-faculty-direct-upload"
-                                  type="file"
-                                  accept="image/*"
-                                  disabled={isUploadingEditPhoto}
-                                  onChange={(e) => {
-                                    if (e.target.files?.[0]) {
-                                      handleDirectFacultyPhotoUpload(e.target.files[0], true);
-                                    }
-                                  }}
-                                  className="hidden"
-                                />
-                              </label>
-                            </div>
-                          )}
-
-                          {/* Fallback Manual URL Input */}
-                          {(showEditManualUrlInput || (editFacultyImgUrl && !editFacultyImgUrl.includes('ibb.co'))) && (
-                            <div className="pt-1">
-                              <input
-                                type="url"
-                                value={editFacultyImgUrl}
-                                onChange={(e) => setEditFacultyImgUrl(e.target.value)}
-                                placeholder="Or paste image URL: https://..."
-                                className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                              />
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Contact Phone <span className="text-slate-400 font-normal">(Optional)</span></label>
-                          <input
-                            type="tel"
-                            value={editFacultyPhone}
-                            onChange={(e) => setEditFacultyPhone(e.target.value)}
-                            placeholder="e.g. +880 1700-000000"
-                            className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          />
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Email Address <span className="text-slate-400 font-normal">(Optional)</span></label>
-                          <input
-                            type="email"
-                            value={editFacultyEmail}
-                            onChange={(e) => setEditFacultyEmail(e.target.value)}
-                            placeholder="e.g. jdoe@uttarauniversity.edu.bd"
-                            className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          />
-                        </div>
-
-                        <button
-                          type="submit"
-                          disabled={isUpdatingFaculty}
-                          className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-600/15 hover:shadow-indigo-600/25 active:scale-98 transition-all flex items-center justify-center gap-2"
-                        >
-                          {isUpdatingFaculty ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Check className="w-3.5 h-3.5" />
-                          )}
-                          <span>Save Changes</span>
-                        </button>
-                      </form>
-                    </>
-                  ) : (
-                    <>
-                      <h4 className="font-bold text-sm text-slate-800 dark:text-slate-200">Add New Faculty</h4>
-                      <form onSubmit={handleAddFaculty} className="space-y-4">
-                        <div className="space-y-1.5">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Faculty Name</label>
-                          <input
-                            type="text"
-                            value={newFacultyName}
-                            onChange={(e) => setNewFacultyName(e.target.value)}
-                            placeholder="e.g. Dr. John Doe"
-                            className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                            required
-                          />
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Designation</label>
-                          <input
-                            type="text"
-                            value={newFacultyDesignation}
-                            onChange={(e) => setNewFacultyDesignation(e.target.value)}
-                            placeholder="e.g. Professor / Associate Professor / Lecturer"
-                            className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                            required
-                          />
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Department</label>
-                          <select
-                            value={newFacultyDeptId}
-                            onChange={(e) => setNewFacultyDeptId(e.target.value)}
-                            className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                            required
-                          >
-                            <option value="">Select Department</option>
-                            {departments.map((dept) => (
-                              <option key={dept.id} value={dept.id}>
-                                {dept.name} ({dept.code})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                              <Camera className="w-3.5 h-3.5 text-indigo-500" />
-                              <span>Faculty Photo</span>
-                              <span className="text-slate-400 font-normal lowercase">(optional)</span>
-                            </label>
-                            <button
-                              type="button"
-                              onClick={() => setShowManualUrlInput(!showManualUrlInput)}
-                              className="text-[10px] text-indigo-600 dark:text-indigo-400 hover:underline font-semibold cursor-pointer"
-                            >
-                              {showManualUrlInput ? 'Hide URL field' : 'Paste URL instead'}
-                            </button>
-                          </div>
-
-                          {/* Live Photo Preview when selected/uploaded */}
-                          {newFacultyImgUrl ? (
-                            <div className="p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl flex items-center justify-between gap-3 shadow-xs">
-                              <div className="flex items-center gap-3 min-w-0">
-                                <div className="w-12 h-12 rounded-xl overflow-hidden border-2 border-indigo-500/20 bg-slate-200 dark:bg-slate-800 shrink-0 shadow-xs">
-                                  <img
-                                    src={formatImageUrl(newFacultyImgUrl)}
-                                    alt="Faculty portrait preview"
-                                    onError={handleImageError}
-                                    className="w-full h-full object-cover"
-                                  />
-                                </div>
-                                <div className="min-w-0">
-                                  <p className="text-xs font-bold text-slate-900 dark:text-white truncate">Photo Ready</p>
-                                  <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                                    <CheckCircle className="w-3 h-3" /> Ready for submission
-                                  </p>
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <label
-                                  htmlFor="new-faculty-direct-upload"
-                                  className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400 text-xs font-bold rounded-lg cursor-pointer transition-colors"
-                                >
-                                  Change
-                                </label>
-                                <button
-                                  type="button"
-                                  onClick={() => setNewFacultyImgUrl('')}
-                                  className="p-1 hover:bg-red-50 dark:hover:bg-red-950/50 text-slate-400 hover:text-red-500 rounded-lg transition-colors cursor-pointer"
-                                  title="Remove photo"
-                                >
-                                  <X className="w-4 h-4" />
-                                </button>
-                              </div>
-                              <input
-                                id="new-faculty-direct-upload"
-                                type="file"
-                                accept="image/*"
-                                onChange={(e) => {
-                                  if (e.target.files?.[0]) {
-                                    handleDirectFacultyPhotoUpload(e.target.files[0], false);
-                                  }
-                                }}
-                                className="hidden"
-                              />
-                            </div>
-                          ) : (
-                            /* Direct Upload Dropzone Button */
-                            <div>
-                              <label
-                                htmlFor="new-faculty-direct-upload"
-                                className={`w-full border-2 border-dashed rounded-2xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer transition-all ${
-                                  isUploadingPhoto
-                                    ? 'border-indigo-400 bg-indigo-50/50 dark:bg-indigo-950/20'
-                                    : 'border-slate-300 dark:border-slate-700 hover:border-indigo-500 bg-slate-50/60 dark:bg-slate-900/60 hover:bg-indigo-50/20 dark:hover:bg-indigo-950/10'
-                                }`}
-                              >
-                                {isUploadingPhoto ? (
-                                  <div className="flex flex-col items-center gap-1.5 py-1 text-indigo-600 dark:text-indigo-400">
-                                    <Loader2 className="w-6 h-6 animate-spin" />
-                                    <span className="text-xs font-bold">Uploading photo to cloud...</span>
-                                  </div>
-                                ) : (
-                                  <>
-                                    <div className="p-2.5 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 rounded-xl">
-                                      <Upload className="w-5 h-5" />
-                                    </div>
-                                    <div className="text-center">
-                                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                                        Direct Upload Faculty Photo
-                                      </p>
-                                      <p className="text-[10px] text-slate-400 mt-0.5">
-                                        Click to choose photo (JPG, PNG, WebP up to 10MB)
-                                      </p>
-                                    </div>
-                                  </>
-                                )}
-                                <input
-                                  id="new-faculty-direct-upload"
-                                  type="file"
-                                  accept="image/*"
-                                  disabled={isUploadingPhoto}
-                                  onChange={(e) => {
-                                    if (e.target.files?.[0]) {
-                                      handleDirectFacultyPhotoUpload(e.target.files[0], false);
-                                    }
-                                  }}
-                                  className="hidden"
-                                />
-                              </label>
-                            </div>
-                          )}
-
-                          {/* Fallback Manual URL Input (Always available if toggled or if external URL present) */}
-                          {(showManualUrlInput || (newFacultyImgUrl && !newFacultyImgUrl.includes('ibb.co'))) && (
-                            <div className="pt-1">
-                              <input
-                                type="url"
-                                value={newFacultyImgUrl}
-                                onChange={(e) => setNewFacultyImgUrl(e.target.value)}
-                                placeholder="Or paste image URL: https://..."
-                                className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                              />
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Contact Phone <span className="text-slate-400 font-normal">(Optional)</span></label>
-                          <input
-                            type="tel"
-                            value={newFacultyPhone}
-                            onChange={(e) => setNewFacultyPhone(e.target.value)}
-                            placeholder="e.g. +880 1700-000000"
-                            className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          />
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Email Address <span className="text-slate-400 font-normal">(Optional)</span></label>
-                          <input
-                            type="email"
-                            value={newFacultyEmail}
-                            onChange={(e) => setNewFacultyEmail(e.target.value)}
-                            placeholder="e.g. jdoe@uttarauniversity.edu.bd"
-                            className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          />
-                        </div>
-
-                        <button
-                          type="submit"
-                          disabled={isAddingFaculty}
-                          className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-600/15 hover:shadow-indigo-600/25 active:scale-98 transition-all flex items-center justify-center gap-2"
-                        >
-                          {isAddingFaculty ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Plus className="w-3.5 h-3.5" />
-                          )}
-                          <span>Add Faculty Member</span>
-                        </button>
-                      </form>
-                    </>
-                  )}
-                </div>
-
-                {/* Faculty List & Filtering */}
-                <div className="lg:col-span-2 bg-white dark:bg-slate-950 p-6 rounded-2xl border border-slate-200 dark:border-slate-900 space-y-4">
-                  <div className="flex flex-col sm:flex-row gap-3 items-center justify-between">
-                    <h4 className="font-bold text-sm text-slate-800 dark:text-slate-200 self-start">Faculty Roster ({faculties.length})</h4>
-                    <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-                      <select
-                        value={selectedDeptId}
-                        onChange={(e) => setSelectedDeptId(e.target.value)}
-                        className="px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-full sm:w-auto"
-                      >
-                        <option value="">All Departments</option>
-                        {departments.map((d) => (
-                          <option key={d.id} value={d.id}>{d.code}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3 max-h-[550px] overflow-y-auto pr-1">
-                    {faculties
-                      .filter((f) => !selectedDeptId || f.departmentId === selectedDeptId)
-                      .map((f) => {
-                        const dept = departments.find((d) => d.id === f.departmentId);
-                        return (
-                          <div
-                            key={f.id}
-                            className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/40 border border-slate-200/60 dark:border-slate-800/60 flex items-center justify-between gap-4"
-                          >
-                            <div className="flex items-center gap-3 overflow-hidden">
-                              {f.imageUrl ? (
-                                <img
-                                  src={f.imageUrl}
-                                  alt={f.name}
-                                  referrerPolicy="no-referrer"
-                                  className="w-11 h-11 rounded-full object-cover border border-slate-200 dark:border-slate-800 flex-shrink-0"
-                                />
-                              ) : (
-                                <div className="w-11 h-11 rounded-full bg-indigo-50 dark:bg-indigo-950/50 border border-slate-200/50 dark:border-slate-800/50 flex items-center justify-center text-indigo-600 dark:text-indigo-400 font-bold text-sm uppercase flex-shrink-0">
-                                  {f.name.charAt(0)}
-                                </div>
-                              )}
-                              <div className="space-y-1 min-w-0">
-                                <span className="inline-block px-2 py-0.5 text-[9px] font-bold bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 rounded-md">
-                                  {dept ? `${dept.name} (${dept.code})` : 'Unknown Dept'}
-                                </span>
-                                <h5 className="font-bold text-sm text-slate-800 dark:text-slate-100 truncate">{f.name}</h5>
-                                <p className="text-xs text-slate-500 truncate">{f.designation}</p>
-                                
-                                {(f.email || f.phone) && (
-                                  <div className="flex flex-col gap-0.5 text-[10px] text-slate-400 dark:text-slate-500 mt-1 pt-1 border-t border-slate-200/20 dark:border-slate-800/20">
-                                    {f.email && (
-                                      <span className="flex items-center gap-1 truncate">
-                                        <Mail className="w-2.5 h-2.5 shrink-0 opacity-70" /> {f.email}
-                                      </span>
-                                    )}
-                                    {f.phone && (
-                                      <span className="flex items-center gap-1 truncate">
-                                        <Phone className="w-2.5 h-2.5 shrink-0 opacity-70" /> {f.phone}
-                                      </span>
-                                    )}
-                                  </div>
-                                )}
-
-                                <div className="flex items-center gap-1.5 text-xs text-amber-500 dark:text-amber-400 mt-1">
-                                  <span className="font-extrabold flex items-center gap-1">
-                                    <Star className="w-3 h-3 fill-amber-400 text-amber-400 inline" />
-                                    <span>{f.averageRating ? f.averageRating.toFixed(2) : '0.00'}</span>
-                                  </span>
-                                  <span className="text-slate-400 dark:text-slate-600">•</span>
-                                  <span className="text-slate-500">
-                                    {f.totalRatingCount || 0} rating(s)
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-1.5 flex-shrink-0">
-                              <button
-                                onClick={() => startEditingFaculty(f)}
-                                className="p-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl transition-colors"
-                                title="Edit Faculty Member"
-                              >
-                                <Pencil className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => handleDeleteFaculty(f.id, f.name)}
-                                className="p-2 bg-red-50 hover:bg-red-100 dark:bg-red-950/20 text-red-600 dark:text-red-400 rounded-xl transition-colors hover:shadow-sm"
-                                title="Delete Faculty Member"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-
-                    {faculties.filter((f) => !selectedDeptId || f.departmentId === selectedDeptId).length === 0 && (
-                      <div className="text-center py-12 bg-slate-50/50 dark:bg-slate-900/20 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
-                        <GraduationCap className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-                        <h4 className="font-semibold text-sm">No faculties found</h4>
-                        <p className="text-xs text-slate-500 mt-1">
-                          {selectedDeptId ? 'No faculty members are listed under this department.' : 'Start by adding a faculty member.'}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* --- TAB: AUDIT LOGS --- */}
-          {activeTab === 'logs' && (
-            <AuditLogsView
-              logs={auditLogs}
-              currentUser={currentUser}
-              onClearLogs={handleClearAllLogs}
-              onRefresh={() => setRefreshTrigger(prev => prev + 1)}
-              loading={false}
-            />
-          )}
-
-          {/* Custom Confirmation / Prompt Modal */}
-          {confirmDialog && confirmDialog.isOpen && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
-              <div className="bg-white dark:bg-slate-950 rounded-2xl max-w-md w-full border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4">
-                <div className="space-y-1.5">
-                  <h3 className="text-base font-bold text-slate-900 dark:text-white font-display">
-                    {confirmDialog.title}
-                  </h3>
-                  <p className="text-xs text-slate-500 leading-relaxed">
-                    {confirmDialog.message}
-                  </p>
-                </div>
-
-                {confirmDialog.requireInput && (
-                  <div className="space-y-1.5">
-                    {confirmDialog.inputLabel && (
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                        {confirmDialog.inputLabel}
-                      </label>
-                    )}
-                    <textarea
-                      value={dialogInputText}
-                      onChange={(e) => setDialogInputText(e.target.value)}
-                      placeholder={confirmDialog.inputPlaceholder || "Enter details..."}
-                      className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
-                      rows={3}
-                    />
-                  </div>
-                )}
-
-                <div className="flex justify-end gap-2.5 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setConfirmDialog(null)}
-                    className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => confirmDialog.onConfirm(confirmDialog.requireInput ? dialogInputText : undefined)}
-                    className="px-4 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-lg shadow-indigo-600/10 hover:shadow-indigo-600/20 active:scale-98 transition-all"
-                  >
-                    {confirmDialog.confirmText || 'Confirm'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Edit Question Paper Modal */}
-          <EditQuestionModal
-            isOpen={isEditModalOpen}
-            onClose={() => {
-              setIsEditModalOpen(false);
-              setEditingQuestion(null);
-            }}
-            question={editingQuestion}
+        {/* ----------------------------------------------------------------------- */}
+        {/* TAB 7: AUDIT TRAIL VIEW                                                 */}
+        {/* ----------------------------------------------------------------------- */}
+        {activeTab === 'logs' && (
+          <AuditLogsView
+            logs={auditLogs}
             currentUser={currentUser}
-            onSuccess={() => {
-              setRefreshTrigger(prev => prev + 1);
-            }}
+            onClearLogs={handleClearAllLogs}
+            onRefresh={() => setRefreshTrigger(prev => prev + 1)}
+            loading={false}
           />
+        )}
 
       </div>
+
+      {/* ========================================================================= */}
+      {/* 4. MODALS & IN-PLACE DIALOGS                                             */}
+      {/* ========================================================================= */}
+
+      {/* Quick Paper Preview Modal */}
+      <QuickPaperPreviewModal
+        isOpen={isPreviewModalOpen}
+        onClose={() => {
+          setIsPreviewModalOpen(false);
+          setPreviewQuestion(null);
+        }}
+        question={previewQuestion}
+        departments={departments}
+        batches={batches}
+        semesters={semesters}
+        onApprove={(id) => promptFeedbackAndVerify(id, 'published')}
+        onReject={(id) => promptFeedbackAndVerify(id, 'rejected')}
+        onEdit={(q) => {
+          setIsPreviewModalOpen(false);
+          setEditingQuestion(q);
+          setIsEditModalOpen(true);
+        }}
+        onDelete={(id) => handleDeleteQuestion(id)}
+        onNavigateToDetail={(id) => {
+          setIsPreviewModalOpen(false);
+          onNavigateToQuestion(id);
+        }}
+        verifyingId={verifyingPaperId}
+      />
+
+      {/* Edit Question Modal */}
+      <EditQuestionModal
+        isOpen={isEditModalOpen}
+        onClose={() => {
+          setIsEditModalOpen(false);
+          setEditingQuestion(null);
+        }}
+        question={editingQuestion}
+        currentUser={currentUser}
+        onSuccess={() => {
+          setRefreshTrigger(prev => prev + 1);
+        }}
+      />
+
+      {/* Custom Universal Confirmation / Feedback Dialog */}
+      {confirmDialog && confirmDialog.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-md w-full border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4">
+            <div className="space-y-1.5">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                {confirmDialog.title}
+              </h3>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                {confirmDialog.message}
+              </p>
+            </div>
+
+            {confirmDialog.requireInput && (
+              <div className="space-y-1.5">
+                {confirmDialog.inputLabel && (
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    {confirmDialog.inputLabel}
+                  </label>
+                )}
+                <textarea
+                  value={dialogInputText}
+                  onChange={(e) => setDialogInputText(e.target.value)}
+                  placeholder={confirmDialog.inputPlaceholder || "Enter details..."}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
+                  rows={3}
+                />
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDialog(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => confirmDialog.onConfirm(confirmDialog.requireInput ? dialogInputText : undefined)}
+                className="px-4 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-lg shadow-indigo-600/15 active:scale-98 transition-all cursor-pointer"
+              >
+                {confirmDialog.confirmText || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

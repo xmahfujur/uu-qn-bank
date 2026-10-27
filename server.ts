@@ -9,7 +9,8 @@ dotenv.config();
 export const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Initialize Gemini API Client lazily as per guidelines
 let aiClient: GoogleGenAI | null = null;
@@ -155,7 +156,60 @@ app.post('/api/ai/summarize-pattern', async (req, res) => {
   }
 });
 
-// 3. API: Delete Images from ImgBB Automatically
+// 3. API: Proxy Upload to ImgBB (Bypasses mobile ISP blocks, Cloudflare challenges, and browser CORS)
+app.post('/api/imgbb/upload', async (req, res) => {
+  try {
+    const { imageBase64, name = 'question_page', apiKey = 'c66284ea8683ede65e71e14d201bec19' } = req.body;
+    if (!imageBase64) {
+      return res.status(400).json({ success: false, error: 'imageBase64 is required.' });
+    }
+
+    const cleanBase64 = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+    const buffer = Buffer.from(cleanBase64, 'base64');
+
+    const fd = new FormData();
+    const fileName = `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.jpg`;
+    fd.append('image', new Blob([buffer], { type: 'image/jpeg' }), fileName);
+    fd.append('name', name);
+
+    const imgbbRes = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey.trim()}`, {
+      method: 'POST',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
+      },
+      body: fd
+    });
+
+    const resData: any = await imgbbRes.json().catch(() => null);
+
+    if (imgbbRes.ok && resData?.success && resData?.data) {
+      return res.json({
+        success: true,
+        data: {
+          url: resData.data.url || resData.data.display_url,
+          deleteUrl: resData.data.delete_url,
+          id: resData.data.id
+        }
+      });
+    }
+
+    console.warn('[ImgBB Server Proxy] Upload error response:', resData);
+    return res.status(400).json({
+      success: false,
+      error: resData?.error?.message || 'ImgBB upload rejected.',
+      details: resData
+    });
+  } catch (err: any) {
+    console.error('[ImgBB Server Proxy] Exception:', err);
+    return res.status(500).json({
+      success: false,
+      error: 'Internal server error uploading image.',
+      details: err.message
+    });
+  }
+});
+
+// 4. API: Delete Images from ImgBB Automatically
 app.post('/api/imgbb/delete', async (req, res) => {
   try {
     const { deleteUrls = [], imageUrls = [], apiKey = 'c66284ea8683ede65e71e14d201bec19' } = req.body;

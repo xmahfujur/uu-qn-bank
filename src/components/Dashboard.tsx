@@ -50,7 +50,8 @@ import {
   arrayUnion, 
   arrayRemove, 
   addDoc,
-  deleteDoc
+  deleteDoc,
+  onSnapshot
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { Department, Batch, Semester, QuestionPaper, ExamType, AcademicEvent } from '../types';
@@ -348,24 +349,42 @@ export default function Dashboard({
     return { days, hours, minutes, seconds, isPast: false };
   }
 
-  // Load question papers from Firestore
+  // Real-time map of users (uid -> username) so that ANY username change in the system
+  // (past, present, or future) automatically updates on all question cards everywhere!
+  const [usersMap, setUsersMap] = useState<Record<string, string>>({});
+
   useEffect(() => {
-    async function loadQuestions() {
-      setLoadingQuestions(true);
-      try {
-        const querySnapshot = await getDocs(collection(db, 'questions'));
-        const qList: QuestionPaper[] = [];
-        querySnapshot.forEach((doc) => {
-          qList.push({ id: doc.id, ...doc.data() } as QuestionPaper);
-        });
-        setQuestions(qList);
-      } catch (err) {
-        console.error('Error loading question papers:', err);
-      } finally {
-        setLoadingQuestions(false);
-      }
-    }
-    loadQuestions();
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
+      const map: Record<string, string> = {};
+      snapshot.forEach(docSnap => {
+        const u = docSnap.data();
+        if (u.username) {
+          map[docSnap.id] = u.username;
+        }
+      });
+      setUsersMap(map);
+    }, (err) => {
+      console.warn('Could not listen to users in Dashboard:', err);
+    });
+    return () => unsubUsers();
+  }, []);
+
+  // Load question papers from Firestore with real-time sync
+  useEffect(() => {
+    setLoadingQuestions(true);
+    const unsubQuestions = onSnapshot(collection(db, 'questions'), (querySnapshot) => {
+      const qList: QuestionPaper[] = [];
+      querySnapshot.forEach((doc) => {
+        qList.push({ id: doc.id, ...doc.data() } as QuestionPaper);
+      });
+      setQuestions(qList);
+      setLoadingQuestions(false);
+    }, (err) => {
+      console.error('Error loading question papers:', err);
+      setLoadingQuestions(false);
+    });
+
+    return () => unsubQuestions();
   }, []);
 
   function showToast(type: 'success' | 'error', message: string) {
@@ -765,7 +784,10 @@ export default function Dashboard({
       const teacher = (q.teacher || '').toLowerCase();
       const courseName = (q.courseName || '').toLowerCase();
       const courseCode = (q.courseCode || '').toLowerCase();
-      const uploader = (q.uploadedByUsername || '').toLowerCase();
+      const authorName = (currentUser && currentUser.uid === q.uploadedByUID)
+        ? currentUser.username
+        : (usersMap[q.uploadedByUID] || q.uploadedByUsername || '');
+      const uploader = authorName.toLowerCase();
       const year = (q as any).year ? String((q as any).year).toLowerCase() : '';
       const session = ((q as any).session || '').toLowerCase();
 
@@ -963,12 +985,19 @@ export default function Dashboard({
 
           {/* Engagement Stats */}
           <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <div className="flex items-center gap-1.5 truncate max-w-[130px]">
-              <div className="w-5 h-5 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center text-[10px] font-bold text-slate-600 dark:text-slate-300">
-                {q.uploadedByUsername.charAt(0).toUpperCase()}
-              </div>
-              <span className="truncate">{q.uploadedByUsername}</span>
-            </div>
+            {(() => {
+              const cardAuthor = (currentUser && currentUser.uid === q.uploadedByUID)
+                ? currentUser.username
+                : (usersMap[q.uploadedByUID] || q.uploadedByUsername || 'scholar');
+              return (
+                <div className="flex items-center gap-1.5 truncate max-w-[130px]">
+                  <div className="w-5 h-5 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center text-[10px] font-bold text-slate-600 dark:text-slate-300 shrink-0">
+                    {cardAuthor.charAt(0).toUpperCase()}
+                  </div>
+                  <span className="truncate" title={cardAuthor}>{cardAuthor}</span>
+                </div>
+              );
+            })()}
 
             <div className="flex items-center gap-3">
               <button 

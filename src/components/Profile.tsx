@@ -221,6 +221,20 @@ export default function Profile({ currentUser, onNavigateToQuestion, onProfileUp
       await updateDoc(userRef, {
         username: sanitized
       });
+
+      // 3. Propagate the updated username across all questions previously uploaded by this user
+      try {
+        const qPapersQuery = query(collection(db, 'questions'), where('uploadedByUID', '==', currentUser.uid));
+        const qPapersSnap = await getDocs(qPapersQuery);
+        if (!qPapersSnap.empty) {
+          const updatePromises = qPapersSnap.docs.map(qDoc => 
+            updateDoc(doc(db, 'questions', qDoc.id), { uploadedByUsername: sanitized }).catch(() => null)
+          );
+          await Promise.all(updatePromises);
+        }
+      } catch (paperUpdateErr) {
+        console.warn('Could not propagate updated username to past question papers:', paperUpdateErr);
+      }
       
       const updatedProfile = {
         ...currentUser,
@@ -228,7 +242,7 @@ export default function Profile({ currentUser, onNavigateToQuestion, onProfileUp
       };
       onProfileUpdated(updatedProfile);
       setEditingUsername(false);
-      setNotification({ type: 'success', message: 'Username updated successfully!' });
+      setNotification({ type: 'success', message: 'Username updated and synced across all your papers!' });
       setTimeout(() => setNotification(null), 3000);
     } catch (err: any) {
       console.error(err);

@@ -8,7 +8,9 @@ import {
   getDoc,
   setDoc,
   updateDoc,
-  onSnapshot
+  onSnapshot,
+  query,
+  where
 } from 'firebase/firestore';
 import { auth, db, syncUserProfile } from './firebase/config';
 import { Department, Batch, Semester, UserProfile } from './types';
@@ -74,18 +76,62 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // --- 1. USER AUTH SEED & DETECTOR ---
+  // --- 1. USER AUTH SEED & REAL-TIME PROFILE DETECTOR ---
   useEffect(() => {
     let isInitial = true;
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    let unsubUserDoc: (() => void) | null = null;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (unsubUserDoc) {
+        unsubUserDoc();
+        unsubUserDoc = null;
+      }
+
       if (isInitial) {
         setAuthLoading(true);
       }
+
       if (firebaseUser) {
         try {
+          // 1. Initial synchronizer
           const profile = await syncUserProfile(firebaseUser);
           setCurrentUser(profile);
-          
+
+          // 2. Real-time snapshot listener on the user's Firestore doc so ANY changes
+          // to username, role, or profile are instantly reflected in React state across the app!
+          unsubUserDoc = onSnapshot(doc(db, 'users', firebaseUser.uid), (docSnap) => {
+            if (docSnap.exists()) {
+              const data = docSnap.data() as UserProfile;
+              const isSuper = firebaseUser.email?.toLowerCase() === 'mr074770@gmail.com';
+              const authoritativeUsername = isSuper ? (data.username || 'mahfujur') : (data.username || profile.username);
+
+              setCurrentUser(prev => ({
+                ...(prev || profile),
+                ...data,
+                username: authoritativeUsername,
+                role: isSuper ? 'super_admin' : (data.role || 'user')
+              }));
+            }
+          }, (err) => {
+            console.warn('User doc snapshot listener error:', err);
+          });
+
+          // 3. Auto-sanitize existing questions authored by this user if they were saved with an old username
+          const targetUsername = (firebaseUser.email?.toLowerCase() === 'mr074770@gmail.com') ? 'mahfujur' : profile.username;
+          if (targetUsername) {
+            query(collection(db, 'questions'), where('uploadedByUID', '==', firebaseUser.uid));
+            getDocs(query(collection(db, 'questions'), where('uploadedByUID', '==', firebaseUser.uid)))
+              .then(snap => {
+                snap.forEach(qDoc => {
+                  const qData = qDoc.data();
+                  if (qData.uploadedByUsername !== targetUsername && (qData.uploadedByUsername === 'mr074770' || !qData.uploadedByUsername)) {
+                    updateDoc(doc(db, 'questions', qDoc.id), { uploadedByUsername: targetUsername }).catch(() => null);
+                  }
+                });
+              })
+              .catch(() => null);
+          }
+
           // Auto-direct to dashboard on first sign-in
           if (activeView === 'landing') {
             setActiveView('dashboard');
@@ -100,7 +146,10 @@ export default function App() {
       isInitial = false;
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeAuth();
+      if (unsubUserDoc) unsubUserDoc();
+    };
   }, []);
 
   // --- 2. ACADEMIC DATA SEEDER & REAL-TIME LISTENERS ---

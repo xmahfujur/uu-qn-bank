@@ -56,6 +56,11 @@ export function handleImageError(
   const target = e.currentTarget;
   const currentSrc = target.src || '';
 
+  // Critical for mobile uploads: Do not attempt to proxy local blob or data URLs through external services
+  if (currentSrc.startsWith('blob:') || currentSrc.startsWith('data:')) {
+    return;
+  }
+
   // Prevent infinite retry loops
   if (target.dataset.hasFailedTwice === 'true') {
     target.src = `https://placehold.co/600x400/1e293b/ffffff?text=${encodeURIComponent(fallbackText)}`;
