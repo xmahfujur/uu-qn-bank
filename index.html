@@ -3,16 +3,35 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#4f46e5" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="UU Qn Bank" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>UU Qn Bank | Uttara University previous exam repository</title>
     <meta name="description" content="A premium portal for preserving, organizing, and accessing previous examination question papers for all departments of Uttara University." />
     <meta property="og:title" content="UU Qn Bank" />
     <meta property="og:description" content="A premium portal for preserving, organizing, and accessing previous examination question papers for all departments of Uttara University." />
     <meta name="referrer" content="no-referrer" />
+    <script>
+      window.__deferredPWAInstallPrompt = null;
+      window.addEventListener('beforeinstallprompt', function(e) {
+        e.preventDefault();
+        window.__deferredPWAInstallPrompt = e;
+        window.dispatchEvent(new CustomEvent('pwa-install-available'));
+      });
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+          navigator.serviceWorker.register('/sw.js').catch(function() {});
+        });
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

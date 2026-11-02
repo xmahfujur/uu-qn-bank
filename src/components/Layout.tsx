@@ -32,6 +32,7 @@ import {
 import { signInWithPopup, getRedirectResult, signOut } from 'firebase/auth';
 import { auth, googleProvider, syncUserProfile } from '../firebase/config';
 import ThemeToggle from './ThemeToggle';
+import { PWAInstallEntryPopup, PWAInstallButton, OfflineIndicator } from './PWAInstallPrompt';
 import { UserProfile } from '../types';
 
 interface LayoutProps {
@@ -349,7 +350,8 @@ export default function Layout({
             </div>
 
             {/* Right Interactive Area */}
-            <div className="hidden md:flex items-center gap-4">
+            <div className="hidden md:flex items-center gap-3">
+              <PWAInstallButton />
               <ThemeToggle />
 
               <button
@@ -444,6 +446,7 @@ export default function Layout({
 
             {/* Mobile Top Header Right Area */}
             <div className="flex items-center md:hidden gap-2">
+              <PWAInstallButton compact />
               <ThemeToggle />
 
               {currentUser ? (
@@ -1066,6 +1069,10 @@ export default function Layout({
           </button>
         </div>
       </nav>
+
+      {/* Entry Popup Notification to Install Web View App & Offline Indicator */}
+      <PWAInstallEntryPopup />
+      <OfflineIndicator />
 
     </div>
   );

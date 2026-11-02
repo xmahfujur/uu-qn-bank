@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
@@ -462,9 +463,17 @@ app.post('/api/imgbb/delete', async (req, res) => {
 
 // Serve the app using Vite (Development) or static assets (Production)
 async function startServer() {
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: {
+          server: httpServer,
+        },
+        watch: null,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -478,7 +487,7 @@ async function startServer() {
     console.log('Serving static files from dist/ in production.');
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
