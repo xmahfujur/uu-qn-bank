@@ -146,6 +146,27 @@
         "imageUrl": { "type": "string" }
       },
       "required": ["name", "designation", "departmentId"]
+    },
+    "PaperImage": {
+      "title": "PaperImage",
+      "description": "Stored image backup for paper pages",
+      "type": "object",
+      "properties": {
+        "fileName": { "type": "string" },
+        "dataUrl": { "type": "string" },
+        "contentType": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["fileName", "dataUrl", "createdAt"]
+    },
+    "SystemSetting": {
+      "title": "SystemSetting",
+      "description": "Global configuration settings",
+      "type": "object",
+      "properties": {
+        "watermark": { "type": "object" },
+        "updatedAt": { "type": "string" }
+      }
     }
   },
   "firestore": {
@@ -157,6 +178,8 @@
     "/reports/{reportId}": { "schema": "Report", "description": "Moderation reports" },
     "/audit_logs/{logId}": { "schema": "AuditLog", "description": "Administrative and moderation audit logs" },
     "/academic_events/{eventId}": { "schema": "AcademicEvent", "description": "Academic events and exam dates" },
-    "/faculties/{facultyId}": { "schema": "Faculty", "description": "Faculty directory members" }
+    "/faculties/{facultyId}": { "schema": "Faculty", "description": "Faculty directory members" },
+    "/paper_images/{imageId}": { "schema": "PaperImage", "description": "Persistent paper page image storage" },
+    "/systemSettings/{settingId}": { "schema": "SystemSetting", "description": "System settings and watermark preferences" }
   }
 }

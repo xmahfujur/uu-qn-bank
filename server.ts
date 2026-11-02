@@ -1,8 +1,13 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
+import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import { initializeApp, getApps } from 'firebase/app';
+import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore';
+import firebaseConfig from './firebase-applet-config.json';
 
 dotenv.config();
 
@@ -11,6 +16,67 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Initialize server-side Firebase instance for resilient permanent image persistence
+const serverFirebaseApp = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig, 'server-storage-app');
+const serverDb = getFirestore(serverFirebaseApp, firebaseConfig.firestoreDatabaseId);
+
+// Ensure local uploads directory exists
+const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Configure Multer for streaming binary image uploads directly to disk
+const uploadStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (_req, file, cb) => {
+    const rawName = file.originalname || 'paper_page';
+    const safeBase = rawName.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 60);
+    const safeName = `${safeBase || `paper_${Date.now()}`}.jpg`;
+    cb(null, safeName);
+  }
+});
+
+const upload = multer({
+  storage: uploadStorage,
+  limits: { fileSize: 30 * 1024 * 1024 } // 30MB maximum
+});
+
+// Serve uploaded question papers with disk + Firestore fallback
+app.get('/uploads/:name', async (req, res, next) => {
+  const fileName = path.basename(req.params.name);
+  const filePath = path.join(uploadsDir, fileName);
+  if (fs.existsSync(filePath)) {
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    return res.sendFile(filePath);
+  }
+  try {
+    const snap = await getDoc(doc(serverDb, 'paper_images', fileName));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data?.dataUrl) {
+        const base64Data = data.dataUrl.includes(',') ? data.dataUrl.split(',')[1] : data.dataUrl;
+        const buffer = Buffer.from(base64Data, 'base64');
+        try { fs.writeFileSync(filePath, buffer); } catch {}
+        res.setHeader('Content-Type', data.contentType || 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return res.send(buffer);
+      }
+    }
+  } catch (dbErr) {
+    console.warn('[Uploads Fallback] Firestore read error:', dbErr);
+  }
+  next();
+});
+
+app.use('/uploads', express.static(uploadsDir, {
+  maxAge: '1y',
+  immutable: true
+}));
 
 // Initialize Gemini API Client lazily as per guidelines
 let aiClient: GoogleGenAI | null = null;
@@ -156,63 +222,115 @@ app.post('/api/ai/summarize-pattern', async (req, res) => {
   }
 });
 
-// 3. API: Proxy Upload to ImgBB (Bypasses mobile ISP blocks, Cloudflare challenges, and browser CORS)
-app.post('/api/imgbb/upload', async (req, res) => {
+// 3. API: Resilient Self-Hosted & Multi-Tier Image Upload (/api/upload & /api/imgbb/upload)
+// Supports direct multipart binary streaming (via multer) AND base64 JSON payloads
+app.post(['/api/upload', '/api/imgbb/upload'], upload.single('image'), async (req, res) => {
   try {
-    const { imageBase64, name = 'question_page', apiKey = 'c66284ea8683ede65e71e14d201bec19' } = req.body;
-    if (!imageBase64) {
-      return res.status(400).json({ success: false, error: 'imageBase64 is required.' });
+    let fileName = '';
+    let buffer: Buffer | null = null;
+    let filePath = '';
+
+    // Mode A: Direct Binary Upload via Multer (req.file)
+    if (req.file) {
+      fileName = req.file.filename;
+      filePath = req.file.path;
+      try {
+        buffer = fs.readFileSync(filePath);
+      } catch (readErr: any) {
+        console.warn('[Server Storage] Buffer read notice:', readErr.message);
+      }
+    } 
+    // Mode B: JSON Base64 Payload (req.body.imageBase64)
+    else if (req.body?.imageBase64) {
+      const cleanBase64 = req.body.imageBase64.includes(',') ? req.body.imageBase64.split(',')[1] : req.body.imageBase64;
+      buffer = Buffer.from(cleanBase64, 'base64');
+      const safeBase = (req.body.name || 'question_page').replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 60);
+      fileName = `${safeBase || `paper_${Date.now()}`}.jpg`;
+      filePath = path.join(uploadsDir, fileName);
+      fs.writeFileSync(filePath, buffer);
+    } else {
+      return res.status(400).json({ success: false, error: 'No image file or imageBase64 provided.' });
     }
 
-    const cleanBase64 = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
-    const buffer = Buffer.from(cleanBase64, 'base64');
-
-    const fd = new FormData();
-    const fileName = `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.jpg`;
-    fd.append('image', new Blob([buffer], { type: 'image/jpeg' }), fileName);
-    fd.append('name', name);
-
-    const imgbbRes = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey.trim()}`, {
-      method: 'POST',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
-      },
-      body: fd
-    });
-
-    const resData: any = await imgbbRes.json().catch(() => null);
-
-    if (imgbbRes.ok && resData?.success && resData?.data) {
-      return res.json({
-        success: true,
-        data: {
-          url: resData.data.url || resData.data.display_url,
-          deleteUrl: resData.data.delete_url,
-          id: resData.data.id
-        }
-      });
+    // 2. Persist to Firestore paper_images for permanent backup if under 950KB
+    if (buffer && buffer.length < 950 * 1024) {
+      try {
+        const fullDataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+        await setDoc(doc(serverDb, 'paper_images', fileName), {
+          fileName,
+          dataUrl: fullDataUrl,
+          contentType: 'image/jpeg',
+          createdAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (dbErr: any) {
+        console.warn('[Server Storage] Firestore backup notice:', dbErr.message);
+      }
     }
 
-    console.warn('[ImgBB Server Proxy] Upload error response:', resData);
-    return res.status(400).json({
-      success: false,
-      error: resData?.error?.message || 'ImgBB upload rejected.',
-      details: resData
+    const localUrl = `/uploads/${fileName}`;
+    const fileSizeKb = buffer ? Math.round(buffer.length / 1024) : 0;
+    console.log(`[Server Storage] Successfully stored paper: ${localUrl} (${fileSizeKb} KB)`);
+
+    return res.json({
+      success: true,
+      data: {
+        url: localUrl,
+        display_url: localUrl,
+        deleteUrl: `/api/image/delete/${fileName}`,
+        id: fileName
+      }
     });
   } catch (err: any) {
-    console.error('[ImgBB Server Proxy] Exception:', err);
+    console.error('[Server Storage] Exception:', err);
     return res.status(500).json({
       success: false,
-      error: 'Internal server error uploading image.',
+      error: 'Internal server error saving paper image.',
       details: err.message
     });
+  }
+});
+
+// 4. API: Retrieve Paper Image with Firestore Fallback Cache
+app.get('/api/image/:name', async (req, res) => {
+  try {
+    const fileName = path.basename(req.params.name);
+    const filePath = path.join(uploadsDir, fileName);
+
+    // Serve from disk if present
+    if (fs.existsSync(filePath)) {
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      return res.sendFile(filePath);
+    }
+
+    // Fallback: Restore from Firestore paper_images
+    try {
+      const snap = await getDoc(doc(serverDb, 'paper_images', fileName));
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.dataUrl) {
+          const base64Data = data.dataUrl.includes(',') ? data.dataUrl.split(',')[1] : data.dataUrl;
+          const buffer = Buffer.from(base64Data, 'base64');
+          try { fs.writeFileSync(filePath, buffer); } catch (e) {}
+          res.setHeader('Content-Type', data.contentType || 'image/jpeg');
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          return res.send(buffer);
+        }
+      }
+    } catch (dbErr) {
+      console.warn('[Server Image Get] Firestore read error:', dbErr);
+    }
+
+    return res.status(404).send('Image not found');
+  } catch (err: any) {
+    return res.status(500).send('Error retrieving image');
   }
 });
 
 // 4. API: Delete Images from ImgBB Automatically
 app.post('/api/imgbb/delete', async (req, res) => {
   try {
-    const { deleteUrls = [], imageUrls = [], apiKey = 'c66284ea8683ede65e71e14d201bec19' } = req.body;
+    const { deleteUrls = [], imageUrls = [], apiKey = '559a1db9c9b114ebf42f3a39489be200' } = req.body;
     const allDeleteUrls: string[] = Array.isArray(deleteUrls) ? deleteUrls.filter(Boolean) : [];
     const allImageUrls: string[] = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
 

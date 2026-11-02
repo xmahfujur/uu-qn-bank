@@ -1,7 +1,13 @@
+import { doc, setDoc } from 'firebase/firestore';
+import { db } from '../firebase/config';
 import { formatImageUrl } from './imageUrl';
 
-export const PRIMARY_IMGBB_API_KEY = 'c66284ea8683ede65e71e14d201bec19';
-export const BACKUP_IMGBB_API_KEY = '38cb17dd8b896b0aa7a8289d023b7596';
+export const PRIMARY_IMGBB_API_KEY = '559a1db9c9b114ebf42f3a39489be200';
+export const BACKUP_IMGBB_API_KEY = 'c66284ea8683ede65e71e14d201bec19';
+export const IMGBB_API_KEYS = [
+  '559a1db9c9b114ebf42f3a39489be200',
+  'c66284ea8683ede65e71e14d201bec19'
+];
 
 /**
  * Generates a guaranteed unique, URL-safe, alphanumeric file name for question paper images.
@@ -45,7 +51,6 @@ export async function createFileFromDataUrl(dataUrl: string, fileName?: string):
     const blob = await res.blob();
     return new File([blob], safeName, { type: blob.type || 'image/jpeg' });
   } catch (err) {
-    // Fallback if dataUrl is base64 string
     if (dataUrl.startsWith('data:')) {
       const parts = dataUrl.split(',');
       const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/jpeg';
@@ -64,9 +69,12 @@ export async function createFileFromDataUrl(dataUrl: string, fileName?: string):
 /**
  * Compresses an image File if it's large or PNG, returning an optimized JPEG file with a unique name.
  * Preserves high text legibility for question papers while keeping payload light (~300-600KB).
- * Includes a 5-second safety timeout so it never hangs on mobile devices.
  */
-export async function optimizeImageFile(file: File, maxDimension = 2048, quality = 0.85): Promise<File> {
+export async function optimizeImageFile(
+  file: File, 
+  maxDimension = 1400, 
+  quality = 0.78
+): Promise<File> {
   const uniqueName = generateUniquePaperFileName(file.name);
 
   // If not an image, return as is
@@ -74,8 +82,8 @@ export async function optimizeImageFile(file: File, maxDimension = 2048, quality
     return file;
   }
 
-  // If already under 350KB and is a JPEG/PNG, keep as is with sanitized name
-  if (file.size < 350 * 1024 && (file.type === 'image/jpeg' || file.type === 'image/jpg')) {
+  // If already under 180KB JPEG, keep as is
+  if (file.size < 180 * 1024 && (file.type === 'image/jpeg' || file.type === 'image/jpg')) {
     return new File([file], uniqueName, { type: 'image/jpeg' });
   }
 
@@ -88,13 +96,13 @@ export async function optimizeImageFile(file: File, maxDimension = 2048, quality
       }
     };
 
-    // Safety timeout: Never let compression hang indefinitely on mobile
-    const timer = setTimeout(fallback, 5000);
+    // Safety timeout: 8 seconds
+    const timer = setTimeout(fallback, 8000);
 
     let url = '';
     try {
       url = URL.createObjectURL(file);
-    } catch (e) {
+    } catch {
       clearTimeout(timer);
       fallback();
       return;
@@ -131,7 +139,6 @@ export async function optimizeImageFile(file: File, maxDimension = 2048, quality
         return;
       }
 
-      // Draw with smoothing for text clarity
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(img, 0, 0, width, height);
@@ -162,18 +169,37 @@ export async function optimizeImageFile(file: File, maxDimension = 2048, quality
 }
 
 /**
- * Converts a File object to a base64 string
+ * Converts a File object to a base64 string safely without DOM locking
  */
-export function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const base64 = result.includes(',') ? result.split(',')[1] : result;
-      resolve(base64);
-    };
-    reader.onerror = (err) => reject(err);
-    reader.readAsDataURL(file);
+export async function fileToBase64(file: File | Blob): Promise<string> {
+  try {
+    if (typeof file.arrayBuffer === 'function') {
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
+    }
+  } catch (abErr) {
+    console.warn('[imageUploader] arrayBuffer notice:', abErr);
+  }
+
+  return new Promise((resolve) => {
+    try {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const base64 = result.includes(',') ? result.split(',')[1] : result;
+        resolve(base64 || '');
+      };
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(file);
+    } catch {
+      resolve('');
+    }
   });
 }
 
@@ -184,93 +210,207 @@ export interface ImgBBUploadResult {
 }
 
 /**
- * Uploads a single file to ImgBB and returns both the public URL and the secret delete_url.
- * Uses a rock-solid dual strategy:
- * 1. Primary Strategy: Direct Binary File Multipart Upload (Proven 100% reliable with ImgBB API)
- * 2. Secondary Strategy: Server-side proxy /api/imgbb/upload (Bypasses mobile carrier DNS / Cloudflare blocks)
+ * Asynchronously backs up an uploaded image to the server and Firestore
  */
-export async function uploadSingleImageToImgBBWithDetails(
-  file: File, 
-  key = PRIMARY_IMGBB_API_KEY
-): Promise<ImgBBUploadResult> {
-  // Generate a distinct unique file name for ImgBB
-  const uniqueName = generateUniquePaperFileName(file.name);
-  const renamedFile = new File([file], uniqueName, { type: file.type || 'image/jpeg' });
-  const optimizedFile = await optimizeImageFile(renamedFile);
-  const apiSafeName = optimizedFile.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, '_');
-
-  // STRATEGY 1: Direct Binary Upload to ImgBB
+async function asyncBackupToServer(file: File, fileName: string) {
   try {
-    const binFormData = new FormData();
-    binFormData.append('image', optimizedFile, optimizedFile.name);
-    binFormData.append('name', apiSafeName);
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
-
-    const binResponse = await fetch(`https://api.imgbb.com/1/upload?key=${key.trim()}`, {
+    const formData = new FormData();
+    formData.append('image', file, fileName);
+    formData.append('name', fileName.replace(/\.[^/.]+$/, ''));
+    await fetch('/api/upload', {
       method: 'POST',
-      signal: controller.signal,
-      body: binFormData,
-    }).finally(() => clearTimeout(timeoutId));
-
-    const binResData = await binResponse.json().catch(() => null);
-
-    if (binResponse.ok && binResData?.success && binResData?.data) {
-      const rawUrl = binResData.data.url || binResData.data.display_url || binResData.data.image?.url;
-      const deleteUrl = binResData.data.delete_url || undefined;
-      const id = binResData.data.id || undefined;
-      if (rawUrl) {
-        return {
-          url: formatImageUrl(rawUrl),
-          deleteUrl,
-          id
-        };
-      }
-    }
-
-    console.warn('[Direct ImgBB Upload Notice] Strategy 1 returned:', binResData?.error?.message || binResData?.status);
-  } catch (err: any) {
-    console.warn('[Direct ImgBB Upload Warning] Strategy 1 fetch failed (will failover to proxy):', err?.message);
-  }
-
-  // STRATEGY 2: Server-Side Proxy Upload (/api/imgbb/upload)
-  // Essential for mobile devices when cellular networks in Bangladesh or carrier firewalls block direct api.imgbb.com
-  try {
-    const base64 = await fileToBase64(optimizedFile);
-    const proxyResponse = await fetch('/api/imgbb/upload', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        imageBase64: base64,
-        name: apiSafeName,
-        apiKey: key.trim()
-      })
+      body: formData
     });
-
-    const proxyData = await proxyResponse.json().catch(() => null);
-
-    if (proxyResponse.ok && proxyData?.success && proxyData?.data?.url) {
-      return {
-        url: formatImageUrl(proxyData.data.url),
-        deleteUrl: proxyData.data.deleteUrl,
-        id: proxyData.data.id
-      };
-    }
-
-    throw new Error(proxyData?.error || 'Server proxy upload failed');
-  } catch (proxyErr: any) {
-    console.error('[ImgBB Fallback Error] Strategy 2 failed:', proxyErr);
-    throw new Error(proxyErr.message || `Upload failed for ${file.name}. Please tap Retry.`);
+  } catch {
+    // Non-blocking background backup
   }
 }
 
 /**
- * Uploads a single file to ImgBB and returns the formatted URL.
+ * Direct ImgBB API v1 upload handler.
+ * Implements the official ImgBB API v1 specification:
+ * POST https://api.imgbb.com/1/upload
+ * Parameters: key (required), image (required - binary or base64), name (optional).
  */
-export async function uploadSingleImageToImgBB(file: File, key = PRIMARY_IMGBB_API_KEY): Promise<string> {
+async function uploadToImgBBDirect(
+  file: File,
+  apiKey: string,
+  apiSafeName: string
+): Promise<ImgBBUploadResult | null> {
+  // Attempt 1: Binary multipart upload
+  try {
+    const formData = new FormData();
+    formData.append('image', file, `${apiSafeName}.jpg`);
+    formData.append('name', apiSafeName);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+    const res = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
+      method: 'POST',
+      signal: controller.signal,
+      body: formData
+    }).finally(() => clearTimeout(timeoutId));
+
+    if (res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data?.success && data?.data?.url) {
+        return {
+          url: formatImageUrl(data.data.url),
+          deleteUrl: data.data.delete_url || data.data.deleteUrl,
+          id: data.data.id || apiSafeName
+        };
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[ImgBB Binary Upload Notice with key ...${apiKey.slice(-6)}]:`, err?.message);
+  }
+
+  // Attempt 2: Base64 data payload
+  try {
+    const base64 = await fileToBase64(file);
+    if (base64) {
+      const formData = new FormData();
+      formData.append('image', base64);
+      formData.append('name', apiSafeName);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+      const res = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
+        method: 'POST',
+        signal: controller.signal,
+        body: formData
+      }).finally(() => clearTimeout(timeoutId));
+
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data?.success && data?.data?.url) {
+          return {
+            url: formatImageUrl(data.data.url),
+            deleteUrl: data.data.delete_url || data.data.deleteUrl,
+            id: data.data.id || apiSafeName
+          };
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[ImgBB Base64 Upload Notice with key ...${apiKey.slice(-6)}]:`, err?.message);
+  }
+
+  return null;
+}
+
+/**
+ * Uploads a single file using a multi-tier resilient pipeline:
+ * Tier 1: Direct Client-Side ImgBB API v1 upload using official keys (primary & backup)
+ * Tier 2: Resilient Self-Hosted server binary upload (/api/upload with Multer)
+ * Tier 3: Direct Client-Side Firestore paper_images storage
+ */
+export async function uploadSingleImageToImgBBWithDetails(
+  file: File, 
+  providedKey?: string,
+  _ignoredMetadata?: any
+): Promise<ImgBBUploadResult> {
+  const uniqueName = generateUniquePaperFileName(file.name);
+  const renamedFile = new File([file], uniqueName, { type: file.type || 'image/jpeg' });
+  const optimizedFile = await optimizeImageFile(renamedFile, 1400, 0.78);
+  const apiSafeName = optimizedFile.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, '_');
+  const cleanId = `${apiSafeName}.jpg`;
+
+  // Candidate API keys: prioritize providedKey (if passed), then PRIMARY, then BACKUP
+  const candidateKeys = Array.from(new Set([
+    providedKey,
+    PRIMARY_IMGBB_API_KEY,
+    BACKUP_IMGBB_API_KEY,
+    ...IMGBB_API_KEYS
+  ])).filter((k): k is string => typeof k === 'string' && k.trim().length > 15);
+
+  // TIER 1: Direct ImgBB API v1 upload from client browser
+  for (const key of candidateKeys) {
+    const result = await uploadToImgBBDirect(optimizedFile, key, apiSafeName);
+    if (result && result.url) {
+      console.log(`[ImgBB Upload Success] Paper page hosted at ${result.url}`);
+      // Asynchronously backup to server/Firestore in background
+      asyncBackupToServer(optimizedFile, cleanId);
+      return result;
+    }
+  }
+
+  console.warn('[imageUploader] Direct ImgBB upload attempts exhausted, falling back to server storage.');
+
+  // TIER 2: Direct Binary Multipart Upload to local /api/upload
+  try {
+    const formData = new FormData();
+    formData.append('image', optimizedFile, cleanId);
+    formData.append('name', apiSafeName);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    const res = await fetch('/api/upload', {
+      method: 'POST',
+      signal: controller.signal,
+      body: formData
+    }).finally(() => clearTimeout(timeoutId));
+
+    if (res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data?.success && data?.data?.url) {
+        return {
+          url: formatImageUrl(data.data.url),
+          deleteUrl: data.data.deleteUrl,
+          id: cleanId
+        };
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Direct Multipart Upload Notice] Failed, attempting Firestore fallback:', err?.message);
+  }
+
+  // TIER 3: Save to Firestore collection 'paper_images' using base64
+  let base64 = '';
+  try {
+    base64 = await fileToBase64(optimizedFile);
+    if (!base64) {
+      base64 = await fileToBase64(file);
+    }
+  } catch (e) {
+    console.warn('Base64 conversion notice:', e);
+  }
+
+  if (base64) {
+    try {
+      const fullDataUrl = `data:image/jpeg;base64,${base64}`;
+      if (fullDataUrl.length < 950 * 1024) {
+        await setDoc(doc(db, 'paper_images', cleanId), {
+          fileName: cleanId,
+          dataUrl: fullDataUrl,
+          contentType: 'image/jpeg',
+          createdAt: new Date().toISOString()
+        }, { merge: true });
+        console.log(`[Firestore Direct Storage] Paper page saved permanently: ${cleanId}`);
+      }
+      return {
+        url: `/api/image/${cleanId}`,
+        id: cleanId
+      };
+    } catch (fsErr: any) {
+      console.warn('[Firestore Storage Notice]:', fsErr.message);
+    }
+  }
+
+  // If even Tier 3 failed, throw an error so the UI prompts the user to Retry
+  throw new Error(`Upload failed for ${file.name}. Please tap Retry.`);
+}
+
+/**
+ * Uploads a single file and returns the formatted URL.
+ */
+export async function uploadSingleImageToImgBB(
+  file: File, 
+  key = PRIMARY_IMGBB_API_KEY
+): Promise<string> {
   const res = await uploadSingleImageToImgBBWithDetails(file, key);
   return res.url;
 }
@@ -291,7 +431,6 @@ export async function deleteImagesFromImgBB(
       return { success: true, deletedCount: 0 };
     }
 
-    // Call server-side deletion endpoint
     const response = await fetch('/api/imgbb/delete', {
       method: 'POST',
       headers: {

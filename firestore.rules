@@ -41,7 +41,8 @@ service cloud.firestore {
       allow create: if isAuthenticated() && request.auth.uid == userId;
       allow update: if isAuthenticated() && (
         (request.auth.uid == userId && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'banned'])) ||
-        isAdmin()
+        isAdmin() ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likesReceived'])
       );
       allow delete: if isAdmin();
     }
@@ -70,7 +71,7 @@ service cloud.firestore {
         (isAuthenticated() && (
           resource.data.uploadedByUID == request.auth.uid || 
           isModerator() || 
-          // Allow updating views, downloads, likes, bookmarks, and reports safely
+          // Allow updating views, downloads, likes, likedBy, bookmarks, and reports safely
           (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views', 'downloads', 'likes', 'likedBy', 'bookmarks', 'reportCount']))
         ));
       allow delete: if isAuthenticated() && (resource.data.uploadedByUID == request.auth.uid || isModerator());
@@ -130,6 +131,19 @@ service cloud.firestore {
       allow create: if isModerator();
       allow update: if false; // Immutable audit trail
       allow delete: if isAdmin();
+    }
+
+    // Paper Images collection (Self-hosted resilient paper storage & backup)
+    match /paper_images/{imageId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if isModerator();
+    }
+
+    // System Settings (Watermark, Storage configs)
+    match /systemSettings/{settingId} {
+      allow read: if true;
+      allow write: if isModerator();
     }
   }
 }

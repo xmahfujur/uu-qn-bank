@@ -49,22 +49,47 @@ export function formatImageUrl(rawUrl: string | undefined | null): string {
  * Universal error fallback handler for images across mobile & desktop devices.
  * Uses domain fixes and wsrv.nl proxy cache to bypass mobile cellular hotlink & DNS blocks.
  */
-export function handleImageError(
+export async function handleImageError(
   e: SyntheticEvent<HTMLImageElement, Event>,
   fallbackText: string = 'UU Question Paper'
 ) {
   const target = e.currentTarget;
   const currentSrc = target.src || '';
 
-  // Critical for mobile uploads: Do not attempt to proxy local blob or data URLs through external services
-  if (currentSrc.startsWith('blob:') || currentSrc.startsWith('data:')) {
-    return;
-  }
-
   // Prevent infinite retry loops
   if (target.dataset.hasFailedTwice === 'true') {
     target.src = `https://placehold.co/600x400/1e293b/ffffff?text=${encodeURIComponent(fallbackText)}`;
     return;
+  }
+
+  // Handle broken blob URLs: they are expired session pointers
+  if (currentSrc.startsWith('blob:')) {
+    target.dataset.hasFailedTwice = 'true';
+    target.src = `https://placehold.co/600x800/1e293b/ffffff?text=${encodeURIComponent(fallbackText)}`;
+    return;
+  }
+
+  // Fallback 0: Automatic direct Firestore paper_images restoration
+  // If an uploaded paper page (/uploads/... or /api/image/... or uu_paper_*.jpg) fails on any client,
+  // restore immediately from Firestore collection 'paper_images'
+  const paperMatch = currentSrc.match(/(uu_paper_[a-zA-Z0-9_-]+\.jpg)/);
+  if (paperMatch && paperMatch[1] && target.dataset.triedFirestore !== 'true') {
+    target.dataset.triedFirestore = 'true';
+    const cleanId = paperMatch[1];
+    try {
+      const { getDoc, doc } = await import('firebase/firestore');
+      const { db } = await import('../firebase/config');
+      const snap = await getDoc(doc(db, 'paper_images', cleanId));
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data?.dataUrl) {
+          target.src = data.dataUrl;
+          return;
+        }
+      }
+    } catch (fsErr) {
+      console.warn('Direct paper_images client retrieval error:', fsErr);
+    }
   }
 
   // Fallback 1: Fix ImgBB .co.com domain on mobile networks
@@ -94,8 +119,8 @@ export function handleImageError(
     }
   }
 
-  // Fallback 3: Proxy via wsrv.nl to bypass mobile cellular ISP blocks & Cloudflare referer/CORS blocks
-  if (!currentSrc.includes('wsrv.nl') && !currentSrc.includes('placehold.co')) {
+  // Fallback 3: Proxy external URLs via wsrv.nl to bypass cellular ISP blocks
+  if (currentSrc.startsWith('http') && !currentSrc.includes('localhost') && !currentSrc.includes('127.0.0.1') && !currentSrc.includes('wsrv.nl') && !currentSrc.includes('placehold.co')) {
     const cleanUrl = currentSrc.replace(/^https?:\/\//, '');
     target.src = `https://wsrv.nl/?url=${encodeURIComponent(cleanUrl)}`;
     target.dataset.hasFailedTwice = 'true';

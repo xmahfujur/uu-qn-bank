@@ -146,6 +146,7 @@ export default function QuickPaperPreviewModal({
                     alt={`${question.courseCode} Page ${activeImageIndex + 1}`}
                     onError={handleImageError}
                     className="max-h-full max-w-full object-contain select-none"
+                    referrerPolicy="no-referrer"
                   />
 
                   {/* Previous / Next buttons */}

@@ -47,7 +47,8 @@ import {
   uploadSingleImageToImgBBWithDetails, 
   deleteImagesFromImgBB, 
   generateUniquePaperFileName,
-  createFileFromDataUrl 
+  createFileFromDataUrl,
+  PRIMARY_IMGBB_API_KEY
 } from '../utils/imageUploader';
 import FreeCropEditor from './FreeCropEditor';
 
@@ -178,8 +179,8 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     "Awesome job! Keep sharing and inspiring fellow students!"
   ];
 
-  // ImgBB Direct Upload State
-  const imgbbKey = 'c66284ea8683ede65e71e14d201bec19';
+  // Storage & Upload Configuration
+  const imgbbKey = (import.meta as any).env?.VITE_IMGBB_API_KEY || PRIMARY_IMGBB_API_KEY;
   const [isUploadingFiles, setIsUploadingFiles] = useState(false);
   const [uploadStatusText, setUploadStatusText] = useState('');
   const [dragActive, setDragActive] = useState(false);
@@ -339,11 +340,29 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
       return;
     }
 
+    // Deduplicate files: prevent adding duplicate copies of the same image file
+    const deduplicatedFiles = validImageFiles.filter(rawFile => {
+      const alreadyPresent = capturedPages.some(p => 
+        p.file && 
+        p.file.name === rawFile.name && 
+        p.file.size === rawFile.size
+      );
+      return !alreadyPresent;
+    });
+
+    if (deduplicatedFiles.length === 0) {
+      setNotification({
+        type: 'error',
+        message: 'Selected page image is already added. Duplicate upload prevented.'
+      });
+      return;
+    }
+
     setNotification(null);
     setIsUploadingFiles(true);
 
     // 1. Instantly create CapturedPage objects with local object URLs for immediate preview (<10ms)
-    const newPages: CapturedPage[] = validImageFiles.map((rawFile, i) => {
+    const newPages: CapturedPage[] = deduplicatedFiles.map((rawFile, i) => {
       const uniqueName = generateUniquePaperFileName(rawFile.name, capturedPages.length + i + 1);
       const file = new File([rawFile], uniqueName, { type: rawFile.type || 'image/jpeg' });
       
@@ -365,21 +384,7 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     // Append to captured pages immediately so preview renders right away!
     setCapturedPages(prev => [...prev, ...newPages]);
 
-    // Also read base64 dataUrl in background to preserve across mobile GC/retries
-    newPages.forEach(p => {
-      if (p.file) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          if (typeof reader.result === 'string') {
-            const dataStr = reader.result;
-            setCapturedPages(prev => prev.map(item => item.id === p.id ? { ...item, dataUrl: dataStr } : item));
-          }
-        };
-        reader.readAsDataURL(p.file);
-      }
-    });
-
-    // 2. Upload to ImgBB sequentially with small anti-throttle delay between pages
+    // 2. Upload pages sequentially
     for (let idx = 0; idx < newPages.length; idx++) {
       const page = newPages[idx];
       if (!page.file) continue;
@@ -782,10 +787,10 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
 
     const filteredImageUrls = capturedPages
       .map(p => p.uploadedUrl ? formatImageUrl(p.uploadedUrl.trim()) : '')
-      .filter(Boolean);
+      .filter(u => u && !u.startsWith('blob:'));
 
     if (!selectedDept || !selectedBatch || !selectedSemester || !courseName || filteredImageUrls.length === 0) {
-      setNotification({ type: 'error', message: 'Please fill in all required fields and upload at least one question page image.' });
+      setNotification({ type: 'error', message: 'Please upload at least one valid question page image. If uploading, please wait for upload to complete.' });
       return;
     }
 
@@ -819,7 +824,10 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
         teacher: teacher.trim() || 'Not Specified',
         imageUrl: filteredImageUrls[0],
         imageUrls: filteredImageUrls,
-        deleteUrls: deleteUrls.filter(Boolean),
+        deleteUrls: Array.from(new Set([
+          ...deleteUrls,
+          ...capturedPages.map(p => p.deleteUrl || '')
+        ])).filter(Boolean),
         pdfUrl: pdfUrl.trim() || null,
         departmentId: selectedDept,
         batchId: selectedBatch,
@@ -1218,33 +1226,9 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
                       >
                         {/* Header: Page Badge & Controls */}
                         <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1.5">
-                            <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 text-[10px] font-extrabold uppercase tracking-wider rounded-md">
-                              Page {index + 1}
-                            </span>
-
-                            {/* Move Up/Down Controls */}
-                            <div className="flex items-center bg-slate-100 dark:bg-slate-900 rounded-md p-0.5 border border-slate-200 dark:border-slate-800">
-                              <button
-                                type="button"
-                                onClick={() => handleMovePageUp(index)}
-                                disabled={index === 0}
-                                className="p-0.5 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 disabled:opacity-20 cursor-pointer"
-                                title="Move earlier"
-                              >
-                                <ArrowUp className="w-3 h-3" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleMovePageDown(index)}
-                                disabled={index === capturedPages.length - 1}
-                                className="p-0.5 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 disabled:opacity-20 cursor-pointer"
-                                title="Move later"
-                              >
-                                <ArrowDown className="w-3 h-3" />
-                              </button>
-                            </div>
-                          </div>
+                          <span className="px-2.5 py-1 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/80 text-[11px] font-bold rounded-md">
+                            Page {index + 1}
+                          </span>
                           
                           <div className="flex items-center gap-1">
                             {/* AI Scan button for page 1 */}
@@ -1268,25 +1252,14 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
                               </button>
                             )}
 
-                            {/* Crop & Rotate */}
-                            <button
-                              type="button"
-                              onClick={() => handleStartCrop(index)}
-                              className="px-2 py-1 bg-slate-100 dark:bg-slate-900 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] font-bold rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
-                              title="Crop / Rotate this page"
-                            >
-                              <Crop className="w-3 h-3 text-indigo-500" />
-                              <span>Crop</span>
-                            </button>
-
                             {/* Remove */}
                             <button
                               type="button"
                               onClick={() => handleRemoveCapturedPage(index)}
-                              className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer"
+                              className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer"
                               title="Delete page"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <Trash2 className="w-4 h-4" />
                             </button>
                           </div>
                         </div>
@@ -1301,11 +1274,16 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
                               src={previewSrc} 
                               alt={`Page ${index + 1} Preview`} 
                               className="w-full h-full object-contain rounded"
-                              referrerPolicy="no-referrer-when-downgrade"
+                              referrerPolicy="no-referrer"
                               onError={(e) => {
-                                // If local dataUrl or blob is available, preserve it instead of breaking into a generic placeholder
-                                if (page.dataUrl && e.currentTarget.src !== page.dataUrl) {
-                                  e.currentTarget.src = page.dataUrl;
+                                if (page.file) {
+                                  try {
+                                    e.currentTarget.src = URL.createObjectURL(page.file);
+                                    return;
+                                  } catch {}
+                                }
+                                if (page.uploadedUrl && e.currentTarget.src !== formatImageUrl(page.uploadedUrl)) {
+                                  e.currentTarget.src = formatImageUrl(page.uploadedUrl);
                                   return;
                                 }
                                 handleImageError(e, `Page ${index + 1}`);

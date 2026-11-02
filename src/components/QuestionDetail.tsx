@@ -177,8 +177,8 @@ export default function QuestionDetail({
           likes: increment(-1),
           likedBy: arrayRemove(currentUser.uid)
         });
-        if (currentUser.uid === question.uploadedByUID) {
-          updateDoc(doc(db, 'users', currentUser.uid), {
+        if (question.uploadedByUID) {
+          updateDoc(doc(db, 'users', question.uploadedByUID), {
             likesReceived: increment(-1)
           }).catch(() => {});
         }
@@ -193,8 +193,8 @@ export default function QuestionDetail({
           likes: increment(1),
           likedBy: arrayUnion(currentUser.uid)
         });
-        if (currentUser.uid === question.uploadedByUID) {
-          updateDoc(doc(db, 'users', currentUser.uid), {
+        if (question.uploadedByUID) {
+          updateDoc(doc(db, 'users', question.uploadedByUID), {
             likesReceived: increment(1)
           }).catch(() => {});
         }
@@ -301,13 +301,13 @@ export default function QuestionDetail({
       }
 
       if (activePages.length === 1) {
-        setDownloadProgress('Downloading...');
+        setDownloadProgress('Preparing paper download...');
         const imageUrl = activePages[0];
         try {
           const response = await fetch(imageUrl);
           if (!response.ok) throw new Error('CORS or network error');
           const blob = await response.blob();
-          // Extract appropriate extension from mime type
+
           let ext = 'jpg';
           if (blob.type.includes('png')) ext = 'png';
           else if (blob.type.includes('jpeg')) ext = 'jpeg';
@@ -321,22 +321,23 @@ export default function QuestionDetail({
           a.click();
           document.body.removeChild(a);
           URL.revokeObjectURL(blobUrl);
-          showNotif('success', 'Paper downloaded successfully!');
+          showNotif('success', 'Question paper downloaded successfully!');
         } catch (err) {
           console.warn('Direct download failed, opening in a new tab', err);
           window.open(imageUrl, '_blank');
         }
       } else {
-        setDownloadProgress('Preparing ZIP...');
+        setDownloadProgress('Preparing ZIP bundle...');
         const zip = new JSZip();
 
         for (let i = 0; i < activePages.length; i++) {
-          setDownloadProgress(`Fetching page ${i + 1}/${activePages.length}...`);
+          setDownloadProgress(`Adding page ${i + 1}/${activePages.length}...`);
           const imageUrl = activePages[i];
           try {
             const response = await fetch(imageUrl);
             if (!response.ok) throw new Error(`Failed page ${i + 1}`);
             const blob = await response.blob();
+
             let ext = 'jpg';
             if (blob.type.includes('png')) ext = 'png';
             else if (blob.type.includes('jpeg')) ext = 'jpeg';
@@ -348,7 +349,7 @@ export default function QuestionDetail({
           }
         }
 
-        setDownloadProgress('Packaging ZIP...');
+        setDownloadProgress('Packaging ZIP archive...');
         const zipContent = await zip.generateAsync({ type: 'blob' });
         const blobUrl = URL.createObjectURL(zipContent);
         
@@ -632,12 +633,12 @@ export default function QuestionDetail({
                 alt={`${question.courseCode} Question Paper`} 
                 className="max-w-full max-h-[70vh] object-contain rounded-lg shadow-sm transition-transform duration-75 ease-out select-none pointer-events-none"
                 style={zoomStyle}
-                referrerPolicy="no-referrer-when-downgrade"
+                referrerPolicy="no-referrer"
                 onError={(e) => handleImageError(e, `${question.courseCode || 'UU'} Question Paper`)}
               />
-              
+
               {/* Overlay auto-zoom indicator badge */}
-              <div className="absolute bottom-3 right-3 bg-slate-950/80 backdrop-blur-sm px-2.5 py-1 text-[10px] font-bold text-slate-300 rounded-lg pointer-events-none select-none transition-opacity duration-200 opacity-85 group-hover:opacity-0 shadow-md border border-white/5 flex items-center gap-1.5">
+              <div className="absolute bottom-3 right-3 bg-slate-950/80 backdrop-blur-sm px-2.5 py-1 text-[10px] font-bold text-slate-300 rounded-lg pointer-events-none select-none transition-opacity duration-200 opacity-85 group-hover:opacity-0 shadow-md border border-white/5 flex items-center gap-1.5 z-30">
                 <ZoomIn className="w-3.5 h-3.5 text-slate-400" />
                 <span>Hover paper to auto zoom</span>
               </div>

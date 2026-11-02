@@ -26,7 +26,7 @@ import { Department, Batch, Semester, ExamType, QuestionPaper } from '../types';
 import { sortSemestersDescending } from '../utils/semesterSort';
 import { sortDepartmentsAlphabetically } from '../utils/departmentSort';
 import { formatImageUrl, handleImageError } from '../utils/imageUrl';
-import { uploadSingleImageToImgBBWithDetails, deleteImagesFromImgBB, generateUniquePaperFileName } from '../utils/imageUploader';
+import { uploadSingleImageToImgBBWithDetails, deleteImagesFromImgBB, generateUniquePaperFileName, PRIMARY_IMGBB_API_KEY } from '../utils/imageUploader';
 import { recordAuditLog } from '../utils/auditLogger';
 
 interface EditQuestionModalProps {
@@ -62,7 +62,7 @@ export default function EditQuestionModal({ isOpen, onClose, question, currentUs
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // ImgBB Direct Upload State
-  const imgbbKey = 'c66284ea8683ede65e71e14d201bec19';
+  const imgbbKey = PRIMARY_IMGBB_API_KEY;
   const [isUploadingFiles, setIsUploadingFiles] = useState(false);
   const [uploadStatusText, setUploadStatusText] = useState('');
   const [dragActive, setDragActive] = useState(false);
@@ -235,10 +235,12 @@ export default function EditQuestionModal({ isOpen, onClose, question, currentUs
     e.preventDefault();
     if (!question) return;
 
-    const filteredImageUrls = imageUrls.map(url => formatImageUrl(url.trim())).filter(Boolean);
+    const filteredImageUrls = imageUrls
+      .map(url => formatImageUrl(url.trim()))
+      .filter(url => url && !url.startsWith('blob:'));
 
     if (!selectedDept || !selectedBatch || !selectedSemester || !courseName || filteredImageUrls.length === 0) {
-      setNotification({ type: 'error', message: 'Please fill in all required fields and provide at least one Question Image URL.' });
+      setNotification({ type: 'error', message: 'Please provide at least one valid question page image. If an old page shows expired, please delete it and add a new photo.' });
       return;
     }
 
@@ -552,7 +554,7 @@ export default function EditQuestionModal({ isOpen, onClose, question, currentUs
                           src={formatImageUrl(url)} 
                           alt={`Page ${index + 1} Preview`} 
                           className="w-full h-full object-contain rounded"
-                          referrerPolicy="no-referrer-when-downgrade"
+                          referrerPolicy="no-referrer"
                           onError={(e) => handleImageError(e, `Page ${index + 1}`)}
                         />
                       </div>
