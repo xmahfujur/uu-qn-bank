@@ -104,7 +104,7 @@
       "type": "object",
       "properties": {
         "action": { "type": "string" },
-        "category": { "type": "string", "enum": ["Papers", "Reports", "Users", "Hierarchy", "Faculty", "Events"] },
+        "category": { "type": "string", "enum": ["Papers", "Reports", "Users", "Hierarchy", "Faculty", "Events", "Settings"] },
         "performedByUID": { "type": "string" },
         "performedByName": { "type": "string" },
         "performedByEmail": { "type": "string" },
@@ -165,6 +165,7 @@
       "type": "object",
       "properties": {
         "watermark": { "type": "object" },
+        "sitePopup": { "type": "object" },
         "updatedAt": { "type": "string" }
       }
     }

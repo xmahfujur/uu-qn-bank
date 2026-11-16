@@ -37,6 +37,7 @@ import {
 } from '../firebase/config';
 import ThemeToggle from './ThemeToggle';
 import { PWAInstallEntryPopup, PWAInstallButton, OfflineIndicator } from './PWAInstallPrompt';
+import { SiteAnnouncementPopup } from './SiteAnnouncementPopup';
 import { UserProfile } from '../types';
 
 interface LayoutProps {
@@ -901,7 +902,13 @@ export default function Layout({
         </div>
       </nav>
 
-      {/* Entry Popup Notification to Install Web View App & Offline Indicator */}
+      {/* Custom Daily Visitor Announcement Pop-Up, Install App Pop-Up & Offline Indicator */}
+      <SiteAnnouncementPopup
+        currentUser={currentUser}
+        onOpenUpload={onOpenUpload}
+        onTriggerAuth={handleLogin}
+        onNavigate={(view) => setActiveView(view)}
+      />
       <PWAInstallEntryPopup />
       <OfflineIndicator />
 

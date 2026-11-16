@@ -123,7 +123,7 @@ export interface AcademicEvent {
   createdByUsername?: string;
 }
 
-export type AuditLogCategory = 'Papers' | 'Reports' | 'Users' | 'Hierarchy' | 'Faculty' | 'Events';
+export type AuditLogCategory = 'Papers' | 'Reports' | 'Users' | 'Hierarchy' | 'Faculty' | 'Events' | 'Settings';
 
 export interface AuditLog {
   id: string;
@@ -140,3 +140,20 @@ export interface AuditLog {
   timestamp: string;
 }
 
+export type SitePopupTheme = 'indigo' | 'amber' | 'emerald' | 'rose';
+export type SitePopupCtaAction = 'upload' | 'calendar' | 'dashboard' | 'link' | 'none';
+
+export interface SitePopupConfig {
+  enabled: boolean;
+  badgeText: string;
+  title: string;
+  message: string;
+  theme: SitePopupTheme;
+  imageUrl?: string;
+  ctaText: string;
+  ctaAction: SitePopupCtaAction;
+  ctaUrl?: string;
+  dismissText: string;
+  updatedAt: string;
+  updatedByUsername?: string;
+}

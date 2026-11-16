@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import JSZip from 'jszip';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { formatImageUrl, handleImageError } from '../utils/imageUrl';
 import { 
   Folder, 
@@ -266,8 +266,51 @@ export default function Dashboard({
   
   // Search & Filter state
   const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const prefersReducedMotion = useReducedMotion();
+  const [headlineIndex, setHeadlineIndex] = useState(0);
   const [filterExamType, setFilterExamType] = useState<string>('All');
   const [sortBy, setSortBy] = useState<string>('newest'); // newest, oldest, views, downloads, likes
+
+  const SEARCH_HEADLINES = [
+    { lead: 'Find Question', accent: 'Papers' },
+    { lead: 'Search Mid & Final', accent: 'Exams' },
+    { lead: 'Explore Course', accent: 'Archives' },
+    { lead: 'Ace Your Next', accent: 'Semester' }
+  ];
+
+  useEffect(() => {
+    if (prefersReducedMotion) return;
+    const interval = setInterval(() => {
+      setHeadlineIndex((prev) => (prev + 1) % SEARCH_HEADLINES.length);
+    }, 3600);
+    return () => clearInterval(interval);
+  }, [prefersReducedMotion]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const tag = (document.activeElement?.tagName || '').toLowerCase();
+        const isEditable =
+          tag === 'input' ||
+          tag === 'textarea' ||
+          tag === 'select' ||
+          (document.activeElement as HTMLElement)?.isContentEditable;
+        if (!isEditable) {
+          e.preventDefault();
+          searchInputRef.current?.focus();
+        }
+      } else if (e.key === 'Escape' && document.activeElement === searchInputRef.current) {
+        if (searchQuery) {
+          setSearchQuery('');
+        } else {
+          searchInputRef.current?.blur();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [searchQuery]);
 
   // Dialog state for Report Action
   const [reportingQuestion, setReportingQuestion] = useState<QuestionPaper | null>(null);
@@ -2033,59 +2076,97 @@ export default function Dashboard({
   return (
     <div id="dashboard-root" className="w-full max-w-7xl mx-auto py-8 px-4 sm:px-6">
       
-      {/* Search Header Banner */}
-      <div className="bg-gradient-to-r from-slate-900 to-indigo-950 dark:from-slate-950 dark:to-slate-950 p-6 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl mb-6 flex flex-col md:flex-row md:items-center justify-between gap-6">
-        <div className="space-y-2">
-          <div className="space-y-1">
-            <h2 className="text-2xl sm:text-3xl font-extrabold font-display text-white flex items-center gap-2">
-              <Search className="w-6 h-6 text-indigo-400" />
-              <span>Find Question Papers</span>
-            </h2>
-            <p className="text-xs sm:text-sm text-slate-300">Uttara University Previous Exam Repository</p>
-          </div>
+      {/* Aurora Search Header Banner */}
+      <div className="relative rounded-2xl sm:rounded-3xl p-[1.5px] sm:p-[2px] bg-gradient-to-r from-indigo-500 via-cyan-400 to-fuchsia-500 aurora-border-flow shadow-xl shadow-indigo-950/25 mb-5 sm:mb-6">
+        {/* Subtle outer aurora glow */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -inset-0.5 rounded-2xl sm:rounded-3xl bg-gradient-to-r from-indigo-500/25 via-cyan-400/20 to-fuchsia-500/25 aurora-border-flow blur-lg opacity-60"
+        />
 
-          {/* Quick Search Suggestion Pills */}
-          <div className="flex flex-wrap items-center gap-1.5 pt-1">
-            <span className="text-[11px] font-semibold text-indigo-200/80 mr-1">Popular:</span>
-            {['CSE', 'EEE', 'BBA', 'Mid-Term', 'Final', 'Algorithms', 'Physics'].map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                onClick={() => setSearchQuery(tag)}
-                className={`px-2 py-0.5 rounded-md text-[11px] font-semibold transition-colors cursor-pointer border ${
-                  searchQuery.toLowerCase() === tag.toLowerCase()
-                    ? 'bg-indigo-500 text-white border-indigo-400'
-                    : 'bg-white/10 hover:bg-white/20 text-slate-200 border-white/10'
-                }`}
-              >
-                {tag}
-              </button>
-            ))}
-          </div>
-        </div>
-        
-        {/* Real-time Global Search bar with filters */}
-        <div className="relative w-full md:w-[420px]">
-          <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-            <Search className="w-5 h-5 text-indigo-400" />
-          </span>
-          <input
-            id="global-search-input"
-            type="text"
-            placeholder="Search course name, code, teacher, dept, batch..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-11 pr-10 py-3 bg-white/10 dark:bg-slate-900/60 text-white rounded-2xl border border-white/10 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-sm placeholder-slate-400 transition-all shadow-inner"
+        <div className="relative overflow-hidden bg-slate-900/95 dark:bg-slate-950/95 p-4 sm:p-6 lg:px-8 lg:py-7 rounded-[14.5px] sm:rounded-[22px]">
+          {/* Ambient internal aurora washes */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -top-24 -right-20 w-72 h-72 rounded-full bg-cyan-500/15 blur-3xl"
           />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery('')}
-              className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-white transition-colors cursor-pointer"
-              title="Clear search"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -bottom-24 -left-16 w-72 h-72 rounded-full bg-fuchsia-500/15 blur-3xl"
+          />
+
+          <div className="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 lg:gap-8">
+            <div className="space-y-1.5 max-w-xl">
+              <div className="min-h-[30px] sm:min-h-[36px] lg:min-h-[40px] flex items-center overflow-hidden">
+                <AnimatePresence mode="wait">
+                  <motion.h2
+                    key={headlineIndex}
+                    initial={prefersReducedMotion ? false : { opacity: 0, y: 10, filter: 'blur(4px)' }}
+                    animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                    exit={prefersReducedMotion ? undefined : { opacity: 0, y: -10, filter: 'blur(4px)' }}
+                    transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+                    className="text-xl sm:text-2xl lg:text-[28px] font-extrabold font-display tracking-tight text-white leading-tight"
+                  >
+                    {SEARCH_HEADLINES[headlineIndex].lead}{' '}
+                    <span className="bg-gradient-to-r from-cyan-300 via-indigo-300 to-fuchsia-300 bg-clip-text text-transparent aurora-border-flow">
+                      {SEARCH_HEADLINES[headlineIndex].accent}
+                    </span>
+                  </motion.h2>
+                </AnimatePresence>
+              </div>
+              <p className="text-xs sm:text-sm text-slate-300/90">
+                Uttara University Previous Exam Repository
+              </p>
+            </div>
+
+            {/* Responsive Search Bar with Aurora Rim (PC & Mobile) */}
+            <div className="w-full lg:w-[480px] xl:w-[540px] shrink-0">
+              <div className="group p-[1.5px] rounded-xl sm:rounded-2xl bg-gradient-to-r from-indigo-400/70 via-cyan-400/70 to-fuchsia-400/70 aurora-border-flow shadow-lg shadow-slate-950/30 focus-within:from-indigo-400 focus-within:via-cyan-300 focus-within:to-fuchsia-400 focus-within:shadow-[0_0_24px_rgba(56,189,248,0.28)] transition-shadow duration-200">
+                <div className="flex items-center min-h-[46px] sm:min-h-[50px] px-3 sm:px-4 bg-white dark:bg-slate-900 rounded-[10.5px] sm:rounded-[14.5px]">
+                  <Search
+                    className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-600 dark:text-cyan-400 shrink-0 transition-transform duration-150 group-focus-within:scale-110"
+                    aria-hidden="true"
+                  />
+                  <input
+                    ref={searchInputRef}
+                    id="global-search-input"
+                    type="text"
+                    inputMode="search"
+                    autoComplete="off"
+                    aria-label="Search question papers by course name, code, teacher, department, or batch"
+                    placeholder="Search course, code, teacher, dept, or batch..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="flex-1 min-w-0 bg-transparent px-2.5 sm:px-3 py-2.5 text-sm sm:text-[15px] font-medium text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none"
+                  />
+                  {searchQuery ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery('');
+                        searchInputRef.current?.focus();
+                      }}
+                      className="min-w-[38px] min-h-[38px] sm:min-w-[40px] sm:min-h-[40px] -mr-1 flex items-center justify-center rounded-lg sm:rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
+                      title="Clear search"
+                      aria-label="Clear search"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => searchInputRef.current?.focus()}
+                      className="hidden md:inline-flex items-center justify-center min-w-[26px] h-6 px-1.5 text-[11px] font-mono font-medium text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md hover:text-indigo-600 dark:hover:text-cyan-300 transition-colors cursor-pointer shrink-0"
+                      title="Press / to search"
+                      aria-label="Press / to focus search"
+                    >
+                      /
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

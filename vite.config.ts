@@ -29,6 +29,13 @@ export default defineConfig(() => {
           display: 'standalone',
           start_url: '/',
           scope: '/',
+          prefer_related_applications: false,
+          related_applications: [
+            {
+              platform: 'webapp',
+              url: 'https://uuqnbank.vercel.app/manifest.webmanifest',
+            },
+          ],
           icons: [
             {
               src: '/pwa-192x192.png',

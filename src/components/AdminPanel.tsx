@@ -38,7 +38,12 @@ import {
   CheckCircle2,
   XCircle,
   Copy,
-  Info
+  Info,
+  Megaphone,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Menu,
+  ChevronRight
 } from 'lucide-react';
 import { 
   collection, 
@@ -54,12 +59,14 @@ import { Department, Batch, Semester, QuestionPaper, Report, UserProfile, Facult
 import EditQuestionModal from './EditQuestionModal';
 import AuditLogsView from './AuditLogsView';
 import QuickPaperPreviewModal from './QuickPaperPreviewModal';
+import SitePopupAdminTab from './SitePopupAdminTab';
 import { compareSemesterNames, sortSemestersDescending } from '../utils/semesterSort';
 import { sortDepartmentsAlphabetically } from '../utils/departmentSort';
 import { deleteQuestionWithImages } from '../utils/deleteQuestion';
 import { recordAuditLog } from '../utils/auditLogger';
 import { uploadSingleImageToImgBB } from '../utils/imageUploader';
 import { formatImageUrl, handleImageError } from '../utils/imageUrl';
+import { subscribeToSitePopupConfig } from '../utils/sitePopup';
 
 interface AdminPanelProps {
   currentUser: any;
@@ -68,18 +75,38 @@ interface AdminPanelProps {
 
 export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminPanelProps) {
   // Navigation inside Admin Panel with session memory so changing items never resets view
-  const [activeTab, setActiveTab] = useState<'analytics' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'logs'>(() => {
+  const [activeTab, setActiveTab] = useState<'analytics' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'popup' | 'logs'>(() => {
     try {
       const saved = sessionStorage.getItem('admin_active_tab');
-      if (saved && ['analytics', 'hierarchy' , 'questions', 'users', 'reports', 'faculties', 'logs'].includes(saved)) {
+      if (saved && ['analytics', 'hierarchy', 'questions', 'users', 'reports', 'faculties', 'popup', 'logs'].includes(saved)) {
         return saved as any;
       }
     } catch (e) {}
     return 'analytics';
   });
 
-  const handleTabChange = (tab: 'analytics' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'logs') => {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('admin_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  const toggleSidebarCollapsed = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('admin_sidebar_collapsed', String(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const handleTabChange = (tab: 'analytics' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'popup' | 'logs') => {
     setActiveTab(tab);
+    setMobileSidebarOpen(false);
     try {
       sessionStorage.setItem('admin_active_tab', tab);
     } catch (e) {}
@@ -108,6 +135,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
   const [reports, setReports] = useState<Report[]>([]);
   const [faculties, setFaculties] = useState<Faculty[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [sitePopupEnabled, setSitePopupEnabled] = useState(false);
 
   // Form states for adding Faculty
   const [newFacultyName, setNewFacultyName] = useState('');
@@ -272,6 +300,11 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       console.warn('Error in audit logs listener:', err);
     });
 
+    // 9. Site Pop-Up Status Listener
+    const unsubSitePopup = subscribeToSitePopupConfig((cfg) => {
+      setSitePopupEnabled(Boolean(cfg.enabled));
+    });
+
     return () => {
       unsubDepts();
       unsubBatches();
@@ -281,6 +314,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       unsubReports();
       unsubFaculties();
       unsubAudit();
+      unsubSitePopup();
     };
   }, []);
 
@@ -1194,92 +1228,289 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     setIsPreviewModalOpen(true);
   };
 
-  return (
-    <div id="admin-panel-root" className="w-full max-w-7xl mx-auto py-6 sm:py-10 px-4 sm:px-6 space-y-8 animate-in fade-in duration-300">
-      
-      {/* ========================================================================= */}
-      {/* 1. EXECUTIVE PRODUCTION COMMAND BAR                                      */}
-      {/* ========================================================================= */}
-      <header className="relative overflow-hidden rounded-3xl bg-slate-950 border border-slate-800 shadow-2xl p-6 sm:p-8 text-white">
-        {/* Subtle radial glow accent */}
-        <div className="absolute top-0 right-0 -mt-12 -mr-12 w-96 h-96 bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute bottom-0 left-1/3 -mb-16 w-80 h-80 bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
+  type AdminTabId = 'analytics' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'popup' | 'logs';
 
-        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-          <div className="space-y-2">
-            <div className="flex items-center gap-2.5">
-              <span className="px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                UU Question Bank Console
-              </span>
-              <span className="flex items-center gap-1.5 text-xs text-slate-400">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                Live Sync Active
-              </span>
+  const navGroups: {
+    group: string;
+    items: {
+      id: AdminTabId;
+      label: string;
+      description: string;
+      icon: React.ComponentType<{ className?: string }>;
+      badge?: string | number | null;
+      badgeClass?: string;
+    }[];
+  }[] = [
+    {
+      group: 'Core',
+      items: [
+        {
+          id: 'analytics',
+          label: 'Overview',
+          description: 'KPIs, moderation queue & recent system activity',
+          icon: BarChart3,
+          badge: null
+        }
+      ]
+    },
+    {
+      group: 'Content & Catalog',
+      items: [
+        {
+          id: 'questions',
+          label: 'Question Papers',
+          description: 'Verify submissions, edit metadata, and manage exam papers',
+          icon: FileText,
+          badge: pendingQuestionsCount > 0 ? pendingQuestionsCount : questions.length || null,
+          badgeClass:
+            pendingQuestionsCount > 0
+              ? 'bg-amber-500 text-white'
+              : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+        },
+        {
+          id: 'hierarchy',
+          label: 'Academic Hierarchy',
+          description: 'Manage departments, batches, and semester folders',
+          icon: FolderTree,
+          badge: departments.length > 0 ? departments.length : null,
+          badgeClass: 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+        },
+        {
+          id: 'faculties',
+          label: 'Faculty Roster',
+          description: 'Add faculty profiles, portraits, and contact directory',
+          icon: GraduationCap,
+          badge: faculties.length > 0 ? faculties.length : null,
+          badgeClass: 'bg-indigo-100 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300'
+        }
+      ]
+    },
+    {
+      group: 'Community & Safety',
+      items: [
+        {
+          id: 'users',
+          label: 'Student Accounts',
+          description: 'Manage user roles, moderators, and account access',
+          icon: Users,
+          badge: users.length > 0 ? users.length : null,
+          badgeClass: 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+        },
+        {
+          id: 'reports',
+          label: 'Moderation Hub',
+          description: 'Investigate and resolve flagged question papers',
+          icon: Flag,
+          badge: reports.length > 0 ? reports.length : null,
+          badgeClass: 'bg-rose-500 text-white'
+        }
+      ]
+    },
+    {
+      group: 'Engagement & Logs',
+      items: [
+        {
+          id: 'popup',
+          label: 'Site Pop-Up',
+          description: 'Configure daily first-visit announcements for all visitors',
+          icon: Megaphone,
+          badge: sitePopupEnabled ? 'ON' : null,
+          badgeClass: 'bg-emerald-500 text-white'
+        },
+        {
+          id: 'logs',
+          label: 'Audit Trail',
+          description: 'Chronological ledger of administrative actions',
+          icon: ScrollText,
+          badge: auditLogs.length > 0 ? auditLogs.length : null,
+          badgeClass: 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+        }
+      ]
+    }
+  ];
+
+  const activeNavItem =
+    navGroups.flatMap((g) => g.items).find((item) => item.id === activeTab) ||
+    navGroups[0].items[0];
+  const ActiveNavIcon = activeNavItem.icon;
+
+  const renderSidebarNavigation = (isMobileDrawer = false) => (
+    <div className="flex flex-col h-full justify-between">
+      <div>
+        {/* Sidebar Header */}
+        <div
+          className={`flex items-center ${
+            !isMobileDrawer && sidebarCollapsed ? 'justify-center px-2 py-4' : 'justify-between px-4 py-4'
+          } border-b border-slate-200/80 dark:border-slate-800/80`}
+        >
+          {(isMobileDrawer || !sidebarCollapsed) && (
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-md shadow-indigo-600/20 shrink-0">
+                <Shield className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-extrabold font-display text-slate-950 dark:text-white truncate">
+                  Admin Console
+                </p>
+                <p className="text-[10px] font-medium text-slate-500 dark:text-slate-400 truncate">
+                  UU Qn Bank Governance
+                </p>
+              </div>
             </div>
-            
-            <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white flex items-center gap-3">
-              <Shield className="w-7 h-7 text-indigo-400" />
-              <span>Super Admin Control Center</span>
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-400 max-w-2xl leading-relaxed">
-              Real-time administrative governance for Uttara University exam archives, departmental hierarchies, faculty rankings, and community safety.
-            </p>
-          </div>
+          )}
 
-          {/* Quick Action Badges / Alert Pills */}
-          <div className="flex flex-wrap items-center gap-2.5 lg:self-center">
-            {pendingQuestionsCount > 0 && (
-              <button
-                onClick={() => {
-                  handleTabChange('questions');
-                  setPaperStatusFilter('pending');
-                }}
-                className="px-3.5 py-2 rounded-2xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shadow-lg shadow-amber-500/10 active:scale-95 group"
-                title="Review pending submissions"
-              >
-                <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping group-hover:scale-125" />
-                <span>{pendingQuestionsCount} Pending Paper{pendingQuestionsCount > 1 ? 's' : ''}</span>
-                <ArrowRight className="w-3.5 h-3.5 opacity-70 group-hover:translate-x-0.5 transition-transform" />
-              </button>
-            )}
-
-            {reports.length > 0 && (
-              <button
-                onClick={() => handleTabChange('reports')}
-                className="px-3.5 py-2 rounded-2xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-300 text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shadow-lg shadow-red-500/10 active:scale-95 group"
-                title="Investigate reported questions"
-              >
-                <AlertTriangle className="w-3.5 h-3.5 text-red-400 animate-bounce" />
-                <span>{reports.length} Open Report{reports.length > 1 ? 's' : ''}</span>
-                <ArrowRight className="w-3.5 h-3.5 opacity-70 group-hover:translate-x-0.5 transition-transform" />
-              </button>
-            )}
-
+          {isMobileDrawer ? (
             <button
-              onClick={() => {
-                setIsRefreshing(true);
-                setRefreshTrigger(p => p + 1);
-                setTimeout(() => {
-                  setIsRefreshing(false);
-                  showNotif('success', 'Realtime sync refreshed.');
-                }, 600);
-              }}
-              className="p-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 transition-all cursor-pointer"
-              title="Refresh database streams"
+              type="button"
+              onClick={() => setMobileSidebarOpen(false)}
+              className="p-2 rounded-xl text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-900 transition-colors cursor-pointer"
+              aria-label="Close admin sidebar"
             >
-              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-indigo-400' : ''}`} />
+              <X className="w-4 h-4" />
             </button>
-          </div>
+          ) : (
+            <button
+              type="button"
+              onClick={toggleSidebarCollapsed}
+              className="p-2 rounded-xl text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-900 transition-colors cursor-pointer shrink-0"
+              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            >
+              {sidebarCollapsed ? (
+                <PanelLeftOpen className="w-4 h-4" />
+              ) : (
+                <PanelLeftClose className="w-4 h-4" />
+              )}
+            </button>
+          )}
         </div>
-      </header>
 
+        {/* Grouped Navigation Links */}
+        <div className="p-3 space-y-5">
+          {navGroups.map((group) => (
+            <div key={group.group} className="space-y-1">
+              {(isMobileDrawer || !sidebarCollapsed) && (
+                <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                  {group.group}
+                </p>
+              )}
+              {group.items.map((tab) => {
+                const Icon = tab.icon;
+                const isActive = activeTab === tab.id;
+                const hasBadge = tab.badge !== undefined && tab.badge !== null;
+
+                return (
+                  <button
+                    key={tab.id}
+                    id={isMobileDrawer ? `mobile-admin-tab-${tab.id}` : `admin-tab-${tab.id}`}
+                    type="button"
+                    onClick={() => handleTabChange(tab.id)}
+                    title={!isMobileDrawer && sidebarCollapsed ? tab.label : undefined}
+                    className={`w-full flex items-center ${
+                      !isMobileDrawer && sidebarCollapsed ? 'justify-center px-2 py-2.5' : 'justify-between px-3 py-2.5'
+                    } rounded-xl text-xs font-semibold transition-all cursor-pointer group relative ${
+                      isActive
+                        ? 'bg-slate-950 dark:bg-white text-white dark:text-slate-950 shadow-sm'
+                        : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-900 hover:text-slate-950 dark:hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <Icon
+                        className={`w-4 h-4 shrink-0 ${
+                          isActive
+                            ? 'text-indigo-400 dark:text-indigo-600'
+                            : 'text-slate-400 group-hover:text-slate-700 dark:group-hover:text-slate-200'
+                        }`}
+                      />
+                      {(isMobileDrawer || !sidebarCollapsed) && (
+                        <span className="truncate whitespace-nowrap">{tab.label}</span>
+                      )}
+                    </div>
+
+                    {(isMobileDrawer || !sidebarCollapsed) && hasBadge && (
+                      <span
+                        className={`px-1.5 py-0.5 text-[10px] rounded-md font-mono font-bold tabular-nums shrink-0 ${
+                          isActive && tab.badgeClass?.includes('bg-slate-200')
+                            ? 'bg-white/20 dark:bg-slate-900/15 text-white dark:text-slate-900'
+                            : tab.badgeClass || 'bg-indigo-500 text-white'
+                        }`}
+                      >
+                        {tab.badge}
+                      </span>
+                    )}
+
+                    {!isMobileDrawer && sidebarCollapsed && hasBadge && (
+                      <span
+                        className={`absolute top-1.5 right-1.5 w-2 h-2 rounded-full ${
+                          tab.id === 'questions' && pendingQuestionsCount > 0
+                            ? 'bg-amber-500'
+                            : tab.id === 'reports' && reports.length > 0
+                            ? 'bg-rose-500'
+                            : tab.id === 'popup' && sitePopupEnabled
+                            ? 'bg-emerald-500'
+                            : 'hidden'
+                        }`}
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Sidebar Footer: Active Admin Info */}
+      <div className="p-3 border-t border-slate-200/80 dark:border-slate-800/80">
+        {isMobileDrawer || !sidebarCollapsed ? (
+          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-900/80 border border-slate-200/70 dark:border-slate-800/80 flex items-center gap-2.5">
+            <img
+              src={
+                currentUser?.photoURL ||
+                `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser?.username || 'Admin')}&background=4f46e5&color=fff`
+              }
+              alt={currentUser?.username || 'Admin'}
+              referrerPolicy="no-referrer"
+              className="w-8 h-8 rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0"
+            />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                @{currentUser?.username || 'admin'}
+              </p>
+              <p className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
+                {currentUser?.role === 'super_admin' ? 'Super Admin' : 'Moderator'}
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="flex justify-center">
+            <img
+              src={
+                currentUser?.photoURL ||
+                `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser?.username || 'Admin')}&background=4f46e5&color=fff`
+              }
+              alt={currentUser?.username || 'Admin'}
+              title={`@${currentUser?.username || 'admin'}`}
+              referrerPolicy="no-referrer"
+              className="w-8 h-8 rounded-full object-cover border border-slate-200 dark:border-slate-700"
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <div id="admin-panel-root" className="w-full max-w-[1440px] mx-auto py-5 sm:py-8 px-4 sm:px-6 lg:px-8 animate-in fade-in duration-300">
       {/* Global Notification Toast */}
       {notification && (
-        <div className={`fixed bottom-6 right-6 z-50 p-4 rounded-2xl shadow-2xl flex items-center gap-3 border backdrop-blur-md animate-in slide-in-from-bottom duration-200 ${
-          notification.type === 'success' 
-            ? 'bg-emerald-950/90 text-emerald-100 border-emerald-800 shadow-emerald-950/30' 
-            : 'bg-red-950/90 text-red-100 border-red-800 shadow-red-950/30'
-        }`}>
+        <div
+          className={`fixed bottom-6 right-6 z-50 p-4 rounded-2xl shadow-2xl flex items-center gap-3 border backdrop-blur-md animate-in slide-in-from-bottom duration-200 ${
+            notification.type === 'success'
+              ? 'bg-emerald-950/90 text-emerald-100 border-emerald-800 shadow-emerald-950/30'
+              : 'bg-red-950/90 text-red-100 border-red-800 shadow-red-950/30'
+          }`}
+        >
           {notification.type === 'success' ? (
             <CheckCircle className="w-5 h-5 text-emerald-400 shrink-0" />
           ) : (
@@ -1289,51 +1520,128 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
         </div>
       )}
 
-      {/* ========================================================================= */}
-      {/* 2. REFINED SEGMENTED NAVIGATION BAR                                      */}
-      {/* ========================================================================= */}
-      <nav 
-        id="admin-segmented-tabs" 
-        className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-slate-200 dark:border-slate-800/80 no-scrollbar"
-      >
-        {[
-          { id: 'analytics', label: 'Overview', icon: BarChart3 },
-          { id: 'hierarchy', label: 'Academic Hierarchy', icon: FolderTree },
-          { id: 'questions', label: 'Question Papers', icon: FileText, badge: pendingQuestionsCount > 0 ? pendingQuestionsCount : null, badgeColor: 'bg-amber-500' },
-          { id: 'faculties', label: 'Faculty Roster', icon: GraduationCap, badge: faculties.length || null, badgeColor: 'bg-indigo-500' },
-          { id: 'users', label: 'Student Accounts', icon: Users, badge: users.length || null, badgeColor: 'bg-slate-500' },
-          { id: 'reports', label: 'Moderation Hub', icon: Flag, badge: reports.length > 0 ? reports.length : null, badgeColor: 'bg-red-500' },
-          { id: 'logs', label: 'Audit Trail', icon: ScrollText, badge: auditLogs.length > 0 ? auditLogs.length : null, badgeColor: 'bg-slate-500' }
-        ].map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              id={`admin-tab-${tab.id}`}
-              key={tab.id}
-              onClick={() => handleTabChange(tab.id as any)}
-              className={`flex items-center gap-2 px-4 py-2.5 text-xs sm:text-sm font-bold rounded-2xl whitespace-nowrap transition-all cursor-pointer ${
-                isActive 
-                  ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-950 shadow-md scale-[1.02]' 
-                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-900/80 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <Icon className="w-4 h-4 shrink-0" />
-              <span>{tab.label}</span>
-              {tab.badge !== null && (
-                <span className={`ml-1 px-1.5 py-0.5 text-[10px] text-white rounded-full font-mono font-bold ${tab.badgeColor || 'bg-indigo-500'}`}>
-                  {tab.badge}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </nav>
+      {/* Mobile Slide-Out Sidebar Drawer */}
+      {mobileSidebarOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden flex">
+          <div
+            className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs"
+            onClick={() => setMobileSidebarOpen(false)}
+          />
+          <aside className="relative z-10 w-72 max-w-[85vw] h-full bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800 shadow-2xl overflow-y-auto">
+            {renderSidebarNavigation(true)}
+          </aside>
+        </div>
+      )}
 
-      {/* ========================================================================= */}
-      {/* 3. TAB VIEWS                                                             */}
-      {/* ========================================================================= */}
-      <div className="space-y-8">
+      <div className="flex flex-col lg:flex-row items-start gap-6">
+        {/* ========================================================================= */}
+        {/* 1. DESKTOP PERSISTENT LEFT SIDEBAR                                        */}
+        {/* ========================================================================= */}
+        <aside
+          id="admin-sidebar"
+          className={`hidden lg:block shrink-0 sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 rounded-3xl shadow-xs transition-all duration-200 ${
+            sidebarCollapsed ? 'w-[76px]' : 'w-[264px]'
+          }`}
+        >
+          {renderSidebarNavigation(false)}
+        </aside>
+
+        {/* ========================================================================= */}
+        {/* 2. MAIN WORKSPACE VIEWPORT (RIGHT COLUMN)                                 */}
+        {/* ========================================================================= */}
+        <div className="flex-1 min-w-0 w-full space-y-6">
+          {/* Mobile Section Header + Drawer Trigger */}
+          <div className="lg:hidden flex items-center justify-between gap-3 p-3 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs">
+            <button
+              type="button"
+              onClick={() => setMobileSidebarOpen(true)}
+              className="min-h-[40px] px-3 py-2 rounded-xl bg-slate-950 dark:bg-white text-white dark:text-slate-950 text-xs font-bold flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <Menu className="w-4 h-4" />
+              <span>Admin Menu</span>
+            </button>
+
+            <div className="flex items-center gap-2 min-w-0">
+              <ActiveNavIcon className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+              <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                {activeNavItem.label}
+              </span>
+            </div>
+          </div>
+
+          {/* Contextual Workspace Top Header Bar */}
+          <header className="rounded-3xl bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 shadow-xs px-5 py-4 sm:px-6 sm:py-5">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div className="space-y-1 min-w-0">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-400">
+                  <span>Admin Console</span>
+                  <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                  <span className="text-indigo-600 dark:text-indigo-400 font-bold truncate">
+                    {activeNavItem.label}
+                  </span>
+                </div>
+                <h1 className="text-xl sm:text-2xl font-extrabold font-display tracking-tight text-slate-950 dark:text-white flex items-center gap-2.5">
+                  <ActiveNavIcon className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                  <span className="truncate">{activeNavItem.label}</span>
+                </h1>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {activeNavItem.description}
+                </p>
+              </div>
+
+              {/* Quick Contextual Actions */}
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {pendingQuestionsCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleTabChange('questions');
+                      setPaperStatusFilter('pending');
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-950/70 border border-amber-200/80 dark:border-amber-800/60 text-amber-700 dark:text-amber-300 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    <span className="font-mono tabular-nums">{pendingQuestionsCount}</span>
+                    <span>Pending Review</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
+
+                {reports.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleTabChange('reports')}
+                    className="px-3.5 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-950/70 border border-rose-200/80 dark:border-rose-800/60 text-rose-700 dark:text-rose-300 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    <span className="font-mono tabular-nums">{reports.length}</span>
+                    <span>Open Report{reports.length > 1 ? 's' : ''}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsRefreshing(true);
+                    setRefreshTrigger((p) => p + 1);
+                    setTimeout(() => {
+                      setIsRefreshing(false);
+                      showNotif('success', 'Realtime sync refreshed.');
+                    }, 600);
+                  }}
+                  className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-900 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-800 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+                  title="Refresh database streams"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-indigo-500' : ''}`} />
+                  <span className="hidden sm:inline">Refresh</span>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {/* ========================================================================= */}
+          {/* 3. TAB VIEWS                                                             */}
+          {/* ========================================================================= */}
+          <div className="space-y-6">
         
         {/* ----------------------------------------------------------------------- */}
         {/* TAB 1: OVERVIEW & ANALYTICS                                             */}
@@ -1474,7 +1782,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
                 <button
                   onClick={() => handleTabChange('hierarchy')}
                   className="p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 hover:border-indigo-500/50 hover:bg-slate-50 dark:hover:bg-slate-900/50 text-left transition-all group cursor-pointer"
@@ -1525,6 +1833,19 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
                     Student Community
                   </h4>
                   <p className="text-xs text-slate-500 mt-1">Assign admin/moderator roles or manage bans</p>
+                </button>
+
+                <button
+                  onClick={() => handleTabChange('popup')}
+                  className="p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 hover:border-indigo-500/50 hover:bg-slate-50 dark:hover:bg-slate-900/50 text-left transition-all group cursor-pointer"
+                >
+                  <div className="w-9 h-9 rounded-xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center mb-3">
+                    <Megaphone className="w-4 h-4" />
+                  </div>
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-white group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors">
+                    Daily Site Pop-Up
+                  </h4>
+                  <p className="text-xs text-slate-500 mt-1">Show custom exam reminders once a day</p>
                 </button>
               </div>
             </div>
@@ -2803,7 +3124,14 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
         )}
 
         {/* ----------------------------------------------------------------------- */}
-        {/* TAB 7: AUDIT TRAIL VIEW                                                 */}
+        {/* TAB 7: DAILY VISITOR SITE POP-UP MANAGER                                */}
+        {/* ----------------------------------------------------------------------- */}
+        {activeTab === 'popup' && (
+          <SitePopupAdminTab currentUser={currentUser} showNotif={showNotif} />
+        )}
+
+        {/* ----------------------------------------------------------------------- */}
+        {/* TAB 8: AUDIT TRAIL VIEW                                                 */}
         {/* ----------------------------------------------------------------------- */}
         {activeTab === 'logs' && (
           <AuditLogsView
@@ -2815,6 +3143,8 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
           />
         )}
 
+          </div>
+        </div>
       </div>
 
       {/* ========================================================================= */}

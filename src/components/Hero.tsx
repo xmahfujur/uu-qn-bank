@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { 
   ArrowRight, 
   BookOpen, 
@@ -14,6 +15,12 @@ import {
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../firebase/config';
 
+const HERO_PHRASES = [
+  'Preserving Knowledge',
+  'Simplifying Studies',
+  'Empowering Students'
+];
+
 interface HeroProps {
   currentUser: any;
   onNavigateToDashboard: () => void;
@@ -21,6 +28,9 @@ interface HeroProps {
 }
 
 export default function Hero({ currentUser, onNavigateToDashboard, onTriggerAuth }: HeroProps) {
+  const prefersReducedMotion = useReducedMotion();
+  const [phraseIndex, setPhraseIndex] = useState(0);
+
   // Statistics States
   const [stats, setStats] = useState({
     departments: 0,
@@ -29,6 +39,14 @@ export default function Hero({ currentUser, onNavigateToDashboard, onTriggerAuth
     downloads: 0,
     uploads: 0
   });
+
+  useEffect(() => {
+    if (prefersReducedMotion) return;
+    const interval = setInterval(() => {
+      setPhraseIndex((prev) => (prev + 1) % HERO_PHRASES.length);
+    }, 3400);
+    return () => clearInterval(interval);
+  }, [prefersReducedMotion]);
 
   useEffect(() => {
     async function loadStats() {
@@ -87,9 +105,24 @@ export default function Hero({ currentUser, onNavigateToDashboard, onTriggerAuth
 
         {/* Display Heading */}
         <div className="space-y-4 max-w-4xl mx-auto">
-          <h1 className="text-4xl sm:text-6xl font-extrabold font-display text-slate-950 dark:text-white tracking-tight leading-tight">
-            Preserving Academic History,<br/>
-            <span className="bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">One Question Paper At A Time</span>
+          <h1 className="text-3xl sm:text-5xl lg:text-6xl font-extrabold font-display text-slate-950 dark:text-white tracking-tight leading-tight text-balance">
+            <span className="block min-h-[1.25em] overflow-hidden">
+              <AnimatePresence mode="wait">
+                <motion.span
+                  key={HERO_PHRASES[phraseIndex]}
+                  initial={prefersReducedMotion ? false : { opacity: 0, y: 18 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={prefersReducedMotion ? undefined : { opacity: 0, y: -18 }}
+                  transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+                  className="inline-block"
+                >
+                  {HERO_PHRASES[phraseIndex]},
+                </motion.span>
+              </AnimatePresence>
+            </span>
+            <span className="block mt-1 bg-gradient-to-r from-indigo-600 via-cyan-500 to-fuchsia-600 dark:from-cyan-300 dark:via-indigo-300 dark:to-fuchsia-300 bg-clip-text text-transparent aurora-border-flow">
+              One Question Paper At A Time
+            </span>
           </h1>
           <p className="text-sm sm:text-lg text-slate-500 dark:text-slate-400 font-sans max-w-2xl mx-auto">
             Uttara University’s premium repository to preserve, organize, and access previous examination question papers. Understand trends, patterns, and prepare better for exams.
