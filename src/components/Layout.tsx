@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { 
   ShieldAlert, 
   User as UserIcon, 
   LogOut, 
   ChevronDown, 
-  Bell, 
   Upload, 
   BookOpen, 
   Shield, 
@@ -20,14 +20,14 @@ import {
   Users,
   ExternalLink,
   Mail,
-  Cpu,
   ChevronUp,
   Loader2,
   Copy,
   Check,
   AlertTriangle,
   Smartphone,
-  Globe
+  Globe,
+  ChevronRight
 } from 'lucide-react';
 import {
   isInAppBrowser as detectInAppBrowser,
@@ -36,6 +36,7 @@ import {
   AuthErrorInfo
 } from '../firebase/config';
 import ThemeToggle from './ThemeToggle';
+import UserAvatar from './UserAvatar';
 import { PWAInstallEntryPopup, PWAInstallButton, OfflineIndicator } from './PWAInstallPrompt';
 import { SiteAnnouncementPopup } from './SiteAnnouncementPopup';
 import { UserProfile } from '../types';
@@ -60,11 +61,39 @@ export default function Layout({
   onOpenUpload
 }: LayoutProps) {
   const [showUserDropdown, setShowUserDropdown] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [copiedDomain, setCopiedDomain] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [showInAppModal, setShowInAppModal] = useState(false);
   const [inAppBrowser] = useState(() => detectInAppBrowser());
+  const prefersReducedMotion = useReducedMotion();
+  const userMenuRef = useRef<HTMLDivElement>(null);
+  const mobileUserMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdowns / mobile menu on outside click or Escape key
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      const inDesktopMenu = userMenuRef.current?.contains(target);
+      const inMobileMenu = mobileUserMenuRef.current?.contains(target);
+      if (!inDesktopMenu && !inMobileMenu) {
+        setShowUserDropdown(false);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowUserDropdown(false);
+        setMobileMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, []);
 
   // Listen to global trigger-google-login event synchronously so click user gesture is preserved
   useEffect(() => {
@@ -175,95 +204,131 @@ export default function Layout({
         </div>
       )}
 
-      {/* Premium Top Navigation Bar */}
-      <nav className={`sticky ${inAppBrowser ? 'top-10' : 'top-0'} z-40 bg-white/80 dark:bg-slate-950/85 backdrop-blur-md border-b border-slate-200/60 dark:border-slate-900/80 transition-all duration-300`}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16">
-            
-            {/* Left Brand Area */}
-            <div className="flex items-center gap-8">
-              <div 
-                onClick={() => setActiveView('dashboard')}
-                className="flex items-center gap-2.5 cursor-pointer group"
-              >
-                <div className="p-2 bg-indigo-600 rounded-xl text-white shadow-md shadow-indigo-600/15 group-hover:scale-105 transition-all">
-                  <BookOpen className="w-5 h-5" />
-                </div>
-                <div>
-                  <span className="font-extrabold text-lg tracking-tight font-display text-slate-950 dark:text-white">
-                    UU Qn Bank
-                  </span>
-                  <p className="text-[9px] font-bold text-indigo-600 dark:text-indigo-400 tracking-widest uppercase">
-                    Uttara University
-                  </p>
-                </div>
+      {/* Top Navigation Bar */}
+      <nav
+        aria-label="Primary navigation"
+        className={`sticky ${inAppBrowser ? 'top-10' : 'top-0'} z-40 bg-white/90 dark:bg-slate-950/90 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800/80 transition-colors duration-200`}
+      >
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between gap-3 xl:gap-6 h-14 lg:h-16">
+            {/* Zone 1: Brand Lockup (strict single-line) */}
+            <button
+              type="button"
+              onClick={() => {
+                setActiveView('dashboard');
+                setShowUserDropdown(false);
+                setMobileMenuOpen(false);
+              }}
+              className="flex items-center gap-2.5 cursor-pointer group shrink-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-xl py-1 pr-1"
+            >
+              <div className="w-9 h-9 bg-indigo-600 rounded-xl text-white flex items-center justify-center shadow-sm shadow-indigo-600/20 group-hover:scale-105 group-active:scale-95 transition-transform duration-150 shrink-0">
+                <BookOpen className="w-4.5 h-4.5" />
               </div>
+              <span className="font-extrabold text-base sm:text-lg tracking-tight font-display text-slate-950 dark:text-white whitespace-nowrap">
+                UU Qn Bank
+              </span>
+            </button>
 
-              {/* Desktop Nav Items */}
-              <div className="hidden md:flex items-center gap-1 text-sm font-semibold text-slate-600 dark:text-slate-300">
-                <button
-                  id="nav-home-btn"
-                  onClick={() => setActiveView('dashboard')}
-                  className={`px-3.5 py-1.5 rounded-xl transition-colors flex items-center gap-1.5 ${
-                    activeView === 'dashboard' ? 'bg-slate-100 dark:bg-slate-900 text-slate-950 dark:text-white' : 'hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <Home className="w-4 h-4" />
-                  Home
-                </button>
-                <button
-                  id="nav-leaderboard-btn"
-                  onClick={() => setActiveView('leaderboard')}
-                  className={`px-3.5 py-1.5 rounded-xl transition-colors flex items-center gap-1.5 ${
-                    activeView === 'leaderboard' ? 'bg-slate-100 dark:bg-slate-900 text-slate-950 dark:text-white' : 'hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <Trophy className="w-4 h-4" />
-                  Honor Roll
-                </button>
-                <button
-                  id="nav-faculty-btn"
-                  onClick={() => setActiveView('faculty')}
-                  className={`px-3.5 py-1.5 rounded-xl transition-colors flex items-center gap-1.5 ${
-                    activeView === 'faculty' ? 'bg-slate-100 dark:bg-slate-900 text-slate-950 dark:text-white' : 'hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <GraduationCap className="w-4 h-4" />
-                  Faculty Ranking
-                </button>
-                <button
-                  id="nav-calendar-btn"
-                  onClick={() => setActiveView('calendar')}
-                  className={`px-3.5 py-1.5 rounded-xl transition-colors flex items-center gap-1.5 ${
-                    activeView === 'calendar' ? 'bg-slate-100 dark:bg-slate-900 text-slate-950 dark:text-white' : 'hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <Calendar className="w-4 h-4 text-indigo-500" />
-                  Academic Calendar
-                </button>
-
-                {currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'moderator') && (
+            {/* Zone 2: Desktop Segmented Navigation Dock (lg+: >= 1024px) */}
+            <div className="hidden lg:flex items-center p-1 bg-slate-100/90 dark:bg-slate-900/90 border border-slate-200/80 dark:border-slate-800/80 rounded-2xl shadow-2xs shrink-0">
+              {(
+                [
+                  { id: 'dashboard', label: 'Home', shortLabel: 'Home', icon: Home },
+                  { id: 'leaderboard', label: 'Honor Roll', shortLabel: 'Rankings', icon: Trophy },
+                  { id: 'faculty', label: 'Faculty Ranking', shortLabel: 'Faculty', icon: GraduationCap },
+                  { id: 'calendar', label: 'Academic Calendar', shortLabel: 'Calendar', icon: Calendar }
+                ] as const
+              ).map((item) => {
+                const Icon = item.icon;
+                const isActive = activeView === item.id;
+                return (
                   <button
-                    id="nav-admin-btn"
-                    onClick={() => setActiveView('admin')}
-                    className={`px-3.5 py-1.5 rounded-xl text-red-600 dark:text-red-400 transition-colors flex items-center gap-1.5 ${
-                      activeView === 'admin' ? 'bg-red-500/10 border border-red-500/20' : 'hover:bg-red-500/5'
+                    key={item.id}
+                    id={`nav-${item.id === 'dashboard' ? 'home' : item.id}-btn`}
+                    type="button"
+                    onClick={() => {
+                      setActiveView(item.id);
+                      setShowUserDropdown(false);
+                    }}
+                    className={`relative px-2.5 xl:px-3.5 py-2 rounded-xl text-xs xl:text-[13px] font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-all duration-150 cursor-pointer active:scale-[0.97] ${
+                      isActive
+                        ? 'text-indigo-700 dark:text-white font-bold'
+                        : 'text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white hover:bg-white/60 dark:hover:bg-slate-800/50'
                     }`}
                   >
-                    <Shield className="w-4 h-4" />
-                    Admin Panel
+                    {isActive && (
+                      <motion.span
+                        layoutId="desktop-nav-active-bg"
+                        transition={
+                          prefersReducedMotion
+                            ? { duration: 0 }
+                            : { type: 'spring', stiffness: 450, damping: 34 }
+                        }
+                        className="absolute inset-0 bg-white dark:bg-slate-800 rounded-xl shadow-xs border border-slate-200/80 dark:border-slate-700/80"
+                      />
+                    )}
+                    <Icon
+                      className={`relative z-10 w-4 h-4 shrink-0 transition-colors ${
+                        isActive ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'
+                      }`}
+                    />
+                    <span className="relative z-10 xl:hidden">{item.shortLabel}</span>
+                    <span className="relative z-10 hidden xl:inline">{item.label}</span>
                   </button>
-                )}
-              </div>
+                );
+              })}
+
+              {currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'moderator') && (
+                <>
+                  <span
+                    aria-hidden="true"
+                    className="h-5 w-px bg-slate-200 dark:bg-slate-800 mx-0.5 shrink-0"
+                  />
+                  <button
+                    id="nav-admin-btn"
+                    type="button"
+                    onClick={() => {
+                      setActiveView('admin');
+                      setShowUserDropdown(false);
+                    }}
+                    className={`relative px-2.5 xl:px-3.5 py-2 rounded-xl text-xs xl:text-[13px] font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-all duration-150 cursor-pointer active:scale-[0.97] ${
+                      activeView === 'admin'
+                        ? 'text-rose-700 dark:text-rose-300'
+                        : 'text-rose-600 dark:text-rose-400 hover:bg-rose-50/80 dark:hover:bg-rose-950/30'
+                    }`}
+                  >
+                    {activeView === 'admin' && (
+                      <motion.span
+                        layoutId="desktop-nav-active-bg"
+                        transition={
+                          prefersReducedMotion
+                            ? { duration: 0 }
+                            : { type: 'spring', stiffness: 450, damping: 34 }
+                        }
+                        className="absolute inset-0 bg-white dark:bg-slate-800 rounded-xl shadow-xs border border-rose-200/80 dark:border-rose-800/70"
+                      />
+                    )}
+                    <Shield className="relative z-10 w-4 h-4 shrink-0" />
+                    <span className="relative z-10 xl:hidden">Admin</span>
+                    <span className="relative z-10 hidden xl:inline">Admin Panel</span>
+                  </button>
+                </>
+              )}
             </div>
 
-            {/* Right Interactive Area */}
-            <div className="hidden md:flex items-center gap-3">
+            {/* Zone 3: Desktop Utility & Primary Action Cluster */}
+            <div className="hidden lg:flex items-center gap-2 shrink-0">
               <PWAInstallButton />
               <ThemeToggle />
 
+              <span
+                aria-hidden="true"
+                className="h-6 w-px bg-slate-200 dark:bg-slate-800 mx-0.5 xl:mx-1 shrink-0"
+              />
+
               <button
                 id="nav-upload-trigger-btn"
+                type="button"
                 onClick={() => {
                   if (!currentUser) {
                     handleLogin();
@@ -272,73 +337,110 @@ export default function Layout({
                   }
                 }}
                 disabled={isLoggingIn}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-indigo-600/15 transition-all disabled:opacity-50 cursor-pointer"
+                className="h-10 px-3 xl:px-4 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.97] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 xl:gap-2 shadow-sm shadow-indigo-600/20 transition-all disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
               >
                 {isLoggingIn ? (
                   <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
                     <span>Signing in...</span>
                   </>
                 ) : (
                   <>
-                    <Upload className="w-3.5 h-3.5" />
-                    <span>Upload Paper {!currentUser && '(Login Required)'}</span>
+                    <Upload className="w-4 h-4 shrink-0" />
+                    <span>Upload</span>
+                    <span className="hidden xl:inline">Paper</span>
                   </>
                 )}
               </button>
 
               {currentUser ? (
-                <div className="relative">
+                <div className="relative" ref={userMenuRef}>
                   <button
                     id="nav-user-dropdown-btn"
+                    type="button"
                     onClick={() => setShowUserDropdown(!showUserDropdown)}
-                    className="flex items-center gap-2 p-1 bg-slate-50 dark:bg-slate-900 border border-slate-200/55 dark:border-slate-800 rounded-xl hover:bg-slate-100 transition-all text-left cursor-pointer"
+                    aria-expanded={showUserDropdown}
+                    className={`h-10 flex items-center gap-2 pl-1.5 pr-2.5 bg-slate-50 dark:bg-slate-900 border rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all text-left cursor-pointer whitespace-nowrap shrink-0 ${
+                      showUserDropdown || activeView === 'profile'
+                        ? 'border-indigo-500/60 ring-2 ring-indigo-500/15'
+                        : 'border-slate-200/80 dark:border-slate-800'
+                    }`}
                   >
-                    <img 
-                      src={currentUser.photoURL} 
-                      alt={currentUser.username} 
-                      className="w-8 h-8 rounded-full border border-slate-200/30 object-cover"
+                    <UserAvatar
+                      src={currentUser.photoURL}
+                      username={currentUser.username}
+                      size="sm"
+                      className="w-7 h-7"
                     />
-                    <div className="pr-2 leading-tight">
-                      <p className="text-xs font-bold text-slate-900 dark:text-white">@{currentUser.username}</p>
-                      <p className="text-[9px] text-slate-500 dark:text-slate-400 capitalize">
-                        {currentUser.role === 'super_admin' ? 'Admin' : currentUser.role === 'moderator' ? 'Moderator' : 'Student'}
+                    <div className="leading-tight max-w-[92px] xl:max-w-[135px]">
+                      <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                        @{currentUser.username}
+                      </p>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                        {currentUser.role === 'super_admin'
+                          ? 'Admin'
+                          : currentUser.role === 'moderator'
+                          ? 'Moderator'
+                          : 'Student'}
                       </p>
                     </div>
-                    <ChevronDown className="w-3.5 h-3.5 text-slate-400 pr-1" />
+                    <ChevronDown
+                      className={`w-3.5 h-3.5 text-slate-400 shrink-0 transition-transform duration-200 ${
+                        showUserDropdown ? 'rotate-180' : ''
+                      }`}
+                    />
                   </button>
 
-                  {showUserDropdown && (
-                    <div className="absolute right-0 mt-2.5 w-48 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-900 rounded-2xl shadow-xl p-1.5 z-50">
-                      <button
-                        id="dropdown-profile-btn"
-                        onClick={() => {
-                          setActiveView('profile');
-                          setShowUserDropdown(false);
-                        }}
-                        className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-xl transition-colors font-medium text-left cursor-pointer"
+                  <AnimatePresence>
+                    {showUserDropdown && (
+                      <motion.div
+                        initial={prefersReducedMotion ? false : { opacity: 0, y: 6, scale: 0.97 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={prefersReducedMotion ? undefined : { opacity: 0, y: 4, scale: 0.97 }}
+                        transition={{ duration: 0.15 }}
+                        className="absolute right-0 mt-2 w-56 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl p-1.5 z-50"
                       >
-                        <UserIcon className="w-4 h-4" />
-                        My Profile Workspace
-                      </button>
-                      <div className="border-t border-slate-100 dark:border-slate-900 my-1"></div>
-                      <button
-                        id="dropdown-logout-btn"
-                        onClick={handleLogout}
-                        className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 rounded-xl transition-colors font-semibold text-left cursor-pointer"
-                      >
-                        <LogOut className="w-4 h-4" />
-                        Logout
-                      </button>
-                    </div>
-                  )}
+                        <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-900 mb-1">
+                          <p className="text-xs font-bold text-slate-950 dark:text-white truncate">
+                            @{currentUser.username}
+                          </p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                            {currentUser.email}
+                          </p>
+                        </div>
+                        <button
+                          id="dropdown-profile-btn"
+                          type="button"
+                          onClick={() => {
+                            setActiveView('profile');
+                            setShowUserDropdown(false);
+                          }}
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900 rounded-xl transition-colors text-left cursor-pointer"
+                        >
+                          <UserIcon className="w-4 h-4 text-indigo-500 shrink-0" />
+                          <span>My Profile Workspace</span>
+                        </button>
+                        <div className="border-t border-slate-100 dark:border-slate-900 my-1" />
+                        <button
+                          id="dropdown-logout-btn"
+                          type="button"
+                          onClick={handleLogout}
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-xl transition-colors font-semibold text-left cursor-pointer"
+                        >
+                          <LogOut className="w-4 h-4 shrink-0" />
+                          <span>Logout</span>
+                        </button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               ) : (
                 <button
                   id="nav-login-btn"
+                  type="button"
                   onClick={handleLogin}
                   disabled={isLoggingIn}
-                  className="px-5 py-2.5 bg-slate-950 dark:bg-white text-white dark:text-slate-950 text-xs font-extrabold rounded-xl hover:opacity-90 transition-all shadow-sm flex items-center gap-2 disabled:opacity-50 cursor-pointer"
+                  className="h-10 px-4 bg-slate-950 dark:bg-white text-white dark:text-slate-950 text-xs font-bold rounded-xl hover:opacity-90 active:scale-[0.97] transition-all shadow-xs flex items-center gap-2 disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
                 >
                   {isLoggingIn ? (
                     <>
@@ -352,63 +454,89 @@ export default function Layout({
               )}
             </div>
 
-            {/* Mobile Top Header Right Area */}
-            <div className="flex items-center md:hidden gap-2">
+            {/* Mobile & Tablet (< lg: < 1024px) Compact Right Header */}
+            <div className="flex items-center lg:hidden gap-1.5 sm:gap-2 shrink-0">
               <PWAInstallButton compact />
               <ThemeToggle />
 
+              {/* Compact Upload button visible on tablet/narrow desktop (sm to lg) */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (!currentUser) handleLogin();
+                  else onOpenUpload();
+                }}
+                disabled={isLoggingIn}
+                className="hidden sm:inline-flex items-center gap-1.5 h-10 px-3 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Upload className="w-3.5 h-3.5 shrink-0" />
+                <span>Upload</span>
+              </button>
+
               {currentUser ? (
-                <div className="relative">
+                <div className="relative" ref={mobileUserMenuRef}>
                   <button
                     id="mobile-user-menu-btn"
+                    type="button"
                     onClick={() => setShowUserDropdown(!showUserDropdown)}
-                    className="flex items-center gap-1.5 p-1 bg-slate-50 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl cursor-pointer"
+                    className="h-10 flex items-center gap-1.5 px-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl cursor-pointer active:scale-95 transition-transform"
+                    aria-label="Account menu"
                   >
-                    <img 
-                      src={currentUser.photoURL} 
-                      alt={currentUser.username} 
-                      className="w-7 h-7 rounded-full object-cover border border-indigo-500/40 shadow-xs"
+                    <UserAvatar
+                      src={currentUser.photoURL}
+                      username={currentUser.username}
+                      size="sm"
+                      className="w-7 h-7 border-indigo-500/40"
                     />
-                    <ChevronDown className="w-3 h-3 text-slate-400" />
+                    <ChevronDown
+                      className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-150 ${
+                        showUserDropdown ? 'rotate-180' : ''
+                      }`}
+                    />
                   </button>
 
                   {showUserDropdown && (
-                    <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-900 rounded-2xl shadow-xl p-1.5 z-50 animate-in fade-in duration-150">
-                      <div className="px-3 py-1.5 border-b border-slate-100 dark:border-slate-900">
-                        <p className="text-xs font-bold text-slate-950 dark:text-white truncate">@{currentUser.username}</p>
+                    <div className="absolute right-0 mt-2 w-52 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl p-1.5 z-50 animate-in fade-in duration-150">
+                      <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-900 mb-1">
+                        <p className="text-xs font-bold text-slate-950 dark:text-white truncate">
+                          @{currentUser.username}
+                        </p>
                         <p className="text-[10px] text-slate-500 truncate">{currentUser.email}</p>
                       </div>
                       <button
+                        type="button"
                         onClick={() => {
                           setActiveView('profile');
                           setShowUserDropdown(false);
                         }}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-xl font-medium text-left cursor-pointer"
+                        className="w-full min-h-[40px] flex items-center gap-2 px-3 py-2 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900 rounded-xl font-semibold text-left cursor-pointer"
                       >
-                        <UserIcon className="w-3.5 h-3.5 text-indigo-500" />
+                        <UserIcon className="w-4 h-4 text-indigo-500 shrink-0" />
                         <span>My Profile Workspace</span>
                       </button>
                       {currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'moderator') && (
                         <button
+                          type="button"
                           onClick={() => {
                             setActiveView('admin');
                             setShowUserDropdown(false);
                           }}
-                          className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 rounded-xl font-semibold text-left cursor-pointer"
+                          className="w-full min-h-[40px] flex items-center gap-2 px-3 py-2 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-xl font-semibold text-left cursor-pointer"
                         >
-                          <Shield className="w-3.5 h-3.5" />
+                          <Shield className="w-4 h-4 shrink-0" />
                           <span>Admin Panel</span>
                         </button>
                       )}
-                      <div className="border-t border-slate-100 dark:border-slate-900 my-1"></div>
+                      <div className="border-t border-slate-100 dark:border-slate-900 my-1" />
                       <button
+                        type="button"
                         onClick={() => {
                           handleLogout();
                           setShowUserDropdown(false);
                         }}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 rounded-xl font-semibold text-left cursor-pointer"
+                        className="w-full min-h-[40px] flex items-center gap-2 px-3 py-2 text-xs text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-xl font-semibold text-left cursor-pointer"
                       >
-                        <LogOut className="w-3.5 h-3.5" />
+                        <LogOut className="w-4 h-4 shrink-0" />
                         <span>Logout</span>
                       </button>
                     </div>
@@ -417,21 +545,254 @@ export default function Layout({
               ) : (
                 <button
                   id="mobile-nav-login-btn"
+                  type="button"
                   onClick={handleLogin}
                   disabled={isLoggingIn}
-                  className="px-3 py-1.5 bg-slate-950 dark:bg-white text-white dark:text-slate-950 text-xs font-bold rounded-xl hover:opacity-90 transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                  className="h-10 px-3 bg-slate-950 dark:bg-white text-white dark:text-slate-950 text-xs font-bold rounded-xl hover:opacity-90 active:scale-95 transition-all shadow-xs flex items-center gap-1.5 disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
                 >
-                  {isLoggingIn ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : null}
+                  {isLoggingIn && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   <span>Sign In</span>
                 </button>
               )}
-            </div>
 
+              {/* Interactive Navigation Drawer / Action Sheet Trigger */}
+              <button
+                id="mobile-nav-drawer-btn"
+                type="button"
+                onClick={() => {
+                  setShowUserDropdown(false);
+                  setMobileMenuOpen((prev) => !prev);
+                }}
+                aria-expanded={mobileMenuOpen}
+                aria-label="Open navigation menu"
+                className="h-10 px-2.5 sm:px-3 bg-slate-100 dark:bg-slate-900 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-200/80 dark:border-slate-800 text-slate-700 dark:text-slate-200 rounded-xl flex items-center gap-1.5 text-xs font-bold active:scale-95 transition-all cursor-pointer shrink-0"
+              >
+                {mobileMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
+                <span className="hidden sm:inline">Menu</span>
+              </button>
+            </div>
           </div>
         </div>
       </nav>
+
+      {/* Interactive Mobile & Tablet Slide-Up / Sheet Navigation Drawer (< lg) */}
+      <AnimatePresence>
+        {mobileMenuOpen && (
+          <div className="fixed inset-0 z-50 lg:hidden flex items-end sm:items-center justify-center sm:p-4">
+            <motion.div
+              initial={prefersReducedMotion ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={prefersReducedMotion ? undefined : { opacity: 0 }}
+              transition={{ duration: 0.18 }}
+              onClick={() => setMobileMenuOpen(false)}
+              className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs"
+            />
+            <motion.div
+              initial={prefersReducedMotion ? false : { y: 40, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={prefersReducedMotion ? undefined : { y: 30, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+              className="relative z-10 w-full sm:max-w-md bg-white dark:bg-slate-950 border-t sm:border border-slate-200 dark:border-slate-800 rounded-t-3xl sm:rounded-3xl shadow-2xl p-4 sm:p-5 pb-[max(env(safe-area-inset-bottom),1.25rem)] space-y-4 max-h-[85vh] overflow-y-auto"
+            >
+              {/* Drag Handle */}
+              <div className="w-10 h-1.5 bg-slate-300 dark:bg-slate-700 rounded-full mx-auto sm:hidden" />
+
+              {/* Header */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  {currentUser ? (
+                    <>
+                      <UserAvatar
+                        src={currentUser.photoURL}
+                        username={currentUser.username}
+                        size="md"
+                      />
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-950 dark:text-white truncate">
+                          @{currentUser.username}
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                          {currentUser.role === 'super_admin'
+                            ? 'Super Admin'
+                            : currentUser.role === 'moderator'
+                            ? 'Moderator'
+                            : 'Uttara University Student'}
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <div>
+                      <p className="text-sm font-bold font-display text-slate-950 dark:text-white">
+                        Quick Navigation
+                      </p>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Explore UU Qn Bank sections
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-900 text-slate-500 hover:text-slate-900 dark:hover:text-white flex items-center justify-center cursor-pointer"
+                  aria-label="Close navigation menu"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Navigation Cards */}
+              <div className="grid grid-cols-1 gap-2">
+                {(
+                  [
+                    {
+                      id: 'dashboard',
+                      label: 'Home Repository',
+                      desc: 'Browse & search previous exam papers',
+                      icon: Home
+                    },
+                    {
+                      id: 'leaderboard',
+                      label: 'Honor Roll',
+                      desc: 'Top student paper contributors',
+                      icon: Trophy
+                    },
+                    {
+                      id: 'faculty',
+                      label: 'Faculty Ranking',
+                      desc: 'Ratings, reviews & teacher directory',
+                      icon: GraduationCap
+                    },
+                    {
+                      id: 'calendar',
+                      label: 'Academic Calendar',
+                      desc: 'Upcoming Mid, Final & semester dates',
+                      icon: Calendar
+                    }
+                  ] as const
+                ).map((item) => {
+                  const Icon = item.icon;
+                  const isActive = activeView === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        setActiveView(item.id);
+                        setMobileMenuOpen(false);
+                      }}
+                      className={`w-full min-h-[54px] px-3.5 py-2.5 rounded-2xl border flex items-center justify-between gap-3 text-left transition-all active:scale-[0.98] cursor-pointer ${
+                        isActive
+                          ? 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-200'
+                          : 'bg-slate-50/70 dark:bg-slate-900/50 border-slate-200/70 dark:border-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div
+                          className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                            isActive
+                              ? 'bg-indigo-600 text-white'
+                              : 'bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200/70 dark:border-slate-700'
+                          }`}
+                        >
+                          <Icon className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold truncate">{item.label}</p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                            {item.desc}
+                          </p>
+                        </div>
+                      </div>
+                      <ChevronRight
+                        className={`w-4 h-4 shrink-0 ${
+                          isActive ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'
+                        }`}
+                      />
+                    </button>
+                  );
+                })}
+
+                {currentUser && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveView('profile');
+                      setMobileMenuOpen(false);
+                    }}
+                    className={`w-full min-h-[54px] px-3.5 py-2.5 rounded-2xl border flex items-center justify-between gap-3 text-left transition-all active:scale-[0.98] cursor-pointer ${
+                      activeView === 'profile'
+                        ? 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-200'
+                        : 'bg-slate-50/70 dark:bg-slate-900/50 border-slate-200/70 dark:border-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div
+                        className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                          activeView === 'profile'
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200/70 dark:border-slate-700'
+                        }`}
+                      >
+                        <UserIcon className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold truncate">My Profile Workspace</p>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                          Manage uploads, bookmarks & settings
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                  </button>
+                )}
+
+                {currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'moderator') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveView('admin');
+                      setMobileMenuOpen(false);
+                    }}
+                    className={`w-full min-h-[54px] px-3.5 py-2.5 rounded-2xl border flex items-center justify-between gap-3 text-left transition-all active:scale-[0.98] cursor-pointer ${
+                      activeView === 'admin'
+                        ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-300 dark:border-rose-700 text-rose-700 dark:text-rose-200'
+                        : 'bg-rose-50/40 dark:bg-rose-950/20 border-rose-200/70 dark:border-rose-900/50 text-rose-700 dark:text-rose-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0">
+                        <Shield className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold truncate">Admin Console</p>
+                        <p className="text-[11px] text-rose-600/80 dark:text-rose-300/80 truncate">
+                          Manage papers, users, pop-ups & logs
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 shrink-0" />
+                  </button>
+                )}
+              </div>
+
+              {/* Primary Sheet Action */}
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  if (!currentUser) handleLogin();
+                  else onOpenUpload();
+                }}
+                className="w-full h-12 rounded-2xl bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20 transition-all cursor-pointer"
+              >
+                <Upload className="w-4 h-4" />
+                <span>{currentUser ? 'Upload Question Paper' : 'Sign In & Upload Paper'}</span>
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Main Core View Area */}
       <main className="flex-1 pb-20 md:pb-0">
@@ -812,92 +1173,122 @@ export default function Layout({
 
       </footer>
 
-      {/* Mobile Always-Visible Bottom Thumb Bar */}
-      <nav 
-        id="mobile-bottom-nav" 
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-950/95 backdrop-blur-lg border-t border-slate-200/80 dark:border-slate-800/80 shadow-[0_-4px_20px_rgba(0,0,0,0.06)] px-2 pt-1.5 pb-[max(env(safe-area-inset-bottom),0.5rem)]"
+      {/* Mobile Interactive Bottom Thumb Bar */}
+      <nav
+        id="mobile-bottom-nav"
+        aria-label="Mobile bottom navigation"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-950/95 backdrop-blur-lg border-t border-slate-200/80 dark:border-slate-800/80 shadow-[0_-4px_20px_rgba(0,0,0,0.06)] px-2 pt-1 pb-[max(env(safe-area-inset-bottom),0.4rem)]"
       >
         <div className="grid grid-cols-5 items-center justify-items-center max-w-lg mx-auto">
           {/* 1. Home */}
           <button
+            type="button"
             onClick={() => setActiveView('dashboard')}
-            className={`flex flex-col items-center justify-center w-full py-1 text-center transition-colors cursor-pointer ${
-              activeView === 'dashboard' 
-                ? 'text-indigo-600 dark:text-indigo-400 font-bold' 
+            className={`relative flex flex-col items-center justify-center w-full min-h-[48px] py-1 text-center transition-all active:scale-95 cursor-pointer ${
+              activeView === 'dashboard'
+                ? 'text-indigo-600 dark:text-indigo-400 font-bold'
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
             }`}
           >
-            <div className={`p-1 rounded-lg ${activeView === 'dashboard' ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}`}>
+            {activeView === 'dashboard' && (
+              <motion.span
+                layoutId="mobile-nav-indicator"
+                transition={prefersReducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 450, damping: 32 }}
+                className="absolute top-0 w-7 h-0.5 rounded-full bg-indigo-600 dark:bg-indigo-400"
+              />
+            )}
+            <div className={`p-1 rounded-xl transition-colors ${activeView === 'dashboard' ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}`}>
               <Home className="w-5 h-5" />
             </div>
-            <span className="text-[10px] tracking-tight mt-0.5">Home</span>
+            <span className="text-[10px] tracking-tight mt-0.5 whitespace-nowrap">Home</span>
           </button>
 
           {/* 2. Honor Roll */}
           <button
+            type="button"
             onClick={() => setActiveView('leaderboard')}
-            className={`flex flex-col items-center justify-center w-full py-1 text-center transition-colors cursor-pointer ${
-              activeView === 'leaderboard' 
-                ? 'text-indigo-600 dark:text-indigo-400 font-bold' 
+            className={`relative flex flex-col items-center justify-center w-full min-h-[48px] py-1 text-center transition-all active:scale-95 cursor-pointer ${
+              activeView === 'leaderboard'
+                ? 'text-indigo-600 dark:text-indigo-400 font-bold'
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
             }`}
           >
-            <div className={`p-1 rounded-lg ${activeView === 'leaderboard' ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}`}>
+            {activeView === 'leaderboard' && (
+              <motion.span
+                layoutId="mobile-nav-indicator"
+                transition={prefersReducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 450, damping: 32 }}
+                className="absolute top-0 w-7 h-0.5 rounded-full bg-indigo-600 dark:bg-indigo-400"
+              />
+            )}
+            <div className={`p-1 rounded-xl transition-colors ${activeView === 'leaderboard' ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}`}>
               <Trophy className="w-5 h-5" />
             </div>
-            <span className="text-[10px] tracking-tight mt-0.5">Honor Roll</span>
+            <span className="text-[10px] tracking-tight mt-0.5 whitespace-nowrap">Rankings</span>
           </button>
 
-          {/* 3. Upload Action */}
+          {/* 3. Center Elevated Upload Action */}
           <button
+            type="button"
             onClick={() => {
               if (!currentUser) handleLogin();
               else onOpenUpload();
             }}
-            className="flex flex-col items-center justify-center w-full py-1 text-center transition-colors cursor-pointer text-indigo-600 dark:text-indigo-400 group"
+            className="flex flex-col items-center justify-center w-full min-h-[48px] py-0.5 text-center transition-transform active:scale-90 cursor-pointer group"
             title="Upload Question Paper"
+            aria-label="Upload Question Paper"
           >
-            <div className="p-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 group-hover:scale-105 transition-transform">
-              <Upload className="w-5 h-5" />
+            <div className="w-11 h-8 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center shadow-md shadow-indigo-600/25 group-hover:scale-105 transition-all">
+              <Upload className="w-4.5 h-4.5" />
             </div>
-            <span className="text-[10px] font-bold tracking-tight mt-0.5">
+            <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 tracking-tight mt-0.5 whitespace-nowrap">
               Upload
             </span>
           </button>
 
           {/* 4. Faculty Ranking */}
           <button
+            type="button"
             onClick={() => setActiveView('faculty')}
-            className={`flex flex-col items-center justify-center w-full py-1 text-center transition-colors cursor-pointer ${
-              activeView === 'faculty' 
-                ? 'text-indigo-600 dark:text-indigo-400 font-bold' 
+            className={`relative flex flex-col items-center justify-center w-full min-h-[48px] py-1 text-center transition-all active:scale-95 cursor-pointer ${
+              activeView === 'faculty'
+                ? 'text-indigo-600 dark:text-indigo-400 font-bold'
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
             }`}
           >
-            <div className={`p-1 rounded-lg ${activeView === 'faculty' ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}`}>
+            {activeView === 'faculty' && (
+              <motion.span
+                layoutId="mobile-nav-indicator"
+                transition={prefersReducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 450, damping: 32 }}
+                className="absolute top-0 w-7 h-0.5 rounded-full bg-indigo-600 dark:bg-indigo-400"
+              />
+            )}
+            <div className={`p-1 rounded-xl transition-colors ${activeView === 'faculty' ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}`}>
               <GraduationCap className="w-5 h-5" />
             </div>
-            <span className="text-[10px] tracking-tight mt-0.5">Faculty</span>
+            <span className="text-[10px] tracking-tight mt-0.5 whitespace-nowrap">Faculty</span>
           </button>
 
-          {/* 5. Calendar or Profile */}
+          {/* 5. Academic Calendar (always reachable in 1 tap on mobile) */}
           <button
-            onClick={() => {
-              if (currentUser) setActiveView('profile');
-              else setActiveView('calendar');
-            }}
-            className={`flex flex-col items-center justify-center w-full py-1 text-center transition-colors cursor-pointer ${
-              (currentUser && activeView === 'profile') || (!currentUser && activeView === 'calendar')
-                ? 'text-indigo-600 dark:text-indigo-400 font-bold' 
+            type="button"
+            onClick={() => setActiveView('calendar')}
+            className={`relative flex flex-col items-center justify-center w-full min-h-[48px] py-1 text-center transition-all active:scale-95 cursor-pointer ${
+              activeView === 'calendar'
+                ? 'text-indigo-600 dark:text-indigo-400 font-bold'
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
             }`}
           >
-            <div className={`p-1 rounded-lg ${(currentUser && activeView === 'profile') || (!currentUser && activeView === 'calendar') ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}`}>
-              {currentUser ? <UserIcon className="w-5 h-5" /> : <Calendar className="w-5 h-5" />}
+            {activeView === 'calendar' && (
+              <motion.span
+                layoutId="mobile-nav-indicator"
+                transition={prefersReducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 450, damping: 32 }}
+                className="absolute top-0 w-7 h-0.5 rounded-full bg-indigo-600 dark:bg-indigo-400"
+              />
+            )}
+            <div className={`p-1 rounded-xl transition-colors ${activeView === 'calendar' ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}`}>
+              <Calendar className="w-5 h-5" />
             </div>
-            <span className="text-[10px] tracking-tight mt-0.5">
-              {currentUser ? 'Profile' : 'Calendar'}
-            </span>
+            <span className="text-[10px] tracking-tight mt-0.5 whitespace-nowrap">Calendar</span>
           </button>
         </div>
       </nav>

@@ -56,10 +56,12 @@ import {
 import { db } from '../firebase/config';
 import { Department, Batch, Semester, QuestionPaper, ExamType, AcademicEvent } from '../types';
 import { sortSemesterNamesDescending, sortSemestersDescending } from '../utils/semesterSort';
+import UserAvatar from './UserAvatar';
 
 interface DashboardProps {
   currentUser: any;
   onNavigateToQuestion: (questionId: string) => void;
+  onNavigateToUserProfile?: (uid: string, username?: string, photoURL?: string) => void;
   departments: Department[];
   batches: Batch[];
   semesters: Semester[];
@@ -70,6 +72,7 @@ interface DashboardProps {
 export default function Dashboard({ 
   currentUser, 
   onNavigateToQuestion,
+  onNavigateToUserProfile,
   departments,
   batches,
   semesters,
@@ -392,17 +395,20 @@ export default function Dashboard({
     return { days, hours, minutes, seconds, isPast: false };
   }
 
-  // Real-time map of users (uid -> username) so that ANY username change in the system
-  // (past, present, or future) automatically updates on all question cards everywhere!
-  const [usersMap, setUsersMap] = useState<Record<string, string>>({});
+  // Real-time map of users (uid -> { username, photoURL }) so that ANY username or avatar change
+  // in the system automatically updates on all question cards everywhere!
+  const [usersMap, setUsersMap] = useState<Record<string, { username: string; photoURL?: string }>>({});
 
   useEffect(() => {
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
-      const map: Record<string, string> = {};
+      const map: Record<string, { username: string; photoURL?: string }> = {};
       snapshot.forEach(docSnap => {
         const u = docSnap.data();
-        if (u.username) {
-          map[docSnap.id] = u.username;
+        if (u.username || u.photoURL) {
+          map[docSnap.id] = {
+            username: u.username || 'scholar',
+            photoURL: u.photoURL || ''
+          };
         }
       });
       setUsersMap(map);
@@ -829,7 +835,7 @@ export default function Dashboard({
       const courseCode = (q.courseCode || '').toLowerCase();
       const authorName = (currentUser && currentUser.uid === q.uploadedByUID)
         ? currentUser.username
-        : (usersMap[q.uploadedByUID] || q.uploadedByUsername || '');
+        : (usersMap[q.uploadedByUID]?.username || q.uploadedByUsername || '');
       const uploader = authorName.toLowerCase();
       const year = (q as any).year ? String((q as any).year).toLowerCase() : '';
       const session = ((q as any).session || '').toLowerCase();
@@ -1029,15 +1035,42 @@ export default function Dashboard({
           {/* Engagement Stats */}
           <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
             {(() => {
+              const userRecord = usersMap[q.uploadedByUID];
               const cardAuthor = (currentUser && currentUser.uid === q.uploadedByUID)
                 ? currentUser.username
-                : (usersMap[q.uploadedByUID] || q.uploadedByUsername || 'scholar');
+                : (userRecord?.username || q.uploadedByUsername || 'scholar');
+              const cardAuthorPhoto = (currentUser && currentUser.uid === q.uploadedByUID)
+                ? currentUser.photoURL
+                : (userRecord?.photoURL || '');
+
+              if (q.uploadedByUID && onNavigateToUserProfile) {
+                return (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onNavigateToUserProfile(q.uploadedByUID, cardAuthor, cardAuthorPhoto);
+                    }}
+                    className="group/author flex items-center gap-2 min-h-[36px] -ml-1.5 px-1.5 py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors max-w-[160px] cursor-pointer text-left"
+                    title={`View @${cardAuthor}'s profile`}
+                  >
+                    <UserAvatar
+                      src={cardAuthorPhoto}
+                      username={cardAuthor}
+                      size="sm"
+                      className="group-hover/author:ring-2 group-hover/author:ring-indigo-500/50 transition-all"
+                    />
+                    <span className="truncate font-medium text-slate-700 dark:text-slate-300 group-hover/author:text-indigo-600 dark:group-hover/author:text-indigo-400 group-hover/author:underline">
+                      {cardAuthor}
+                    </span>
+                  </button>
+                );
+              }
+
               return (
-                <div className="flex items-center gap-1.5 truncate max-w-[130px]">
-                  <div className="w-5 h-5 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center text-[10px] font-bold text-slate-600 dark:text-slate-300 shrink-0">
-                    {cardAuthor.charAt(0).toUpperCase()}
-                  </div>
-                  <span className="truncate" title={cardAuthor}>{cardAuthor}</span>
+                <div className="flex items-center gap-2 truncate max-w-[160px]">
+                  <UserAvatar src={cardAuthorPhoto} username={cardAuthor} size="sm" />
+                  <span className="truncate font-medium" title={cardAuthor}>{cardAuthor}</span>
                 </div>
               );
             })()}

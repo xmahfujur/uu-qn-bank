@@ -145,5 +145,62 @@ service cloud.firestore {
       allow read: if true;
       allow write: if isModerator();
     }
+
+    // Daily Visitor Analytics (Moderators/Admins read; visitors may only atomically increment by +1)
+    function isValidVisitorDateId(dateId) {
+      return dateId is string && dateId.size() == 10 && dateId.matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
+    function isValidVisitorStatCreate(data, dateId) {
+      return data.keys().hasAll(['date', 'uniqueVisitors', 'totalVisits', 'updatedAt'])
+        && data.keys().hasOnly(['date', 'uniqueVisitors', 'totalVisits', 'mobileVisits', 'desktopVisits', 'pwaVisits', 'updatedAt'])
+        && data.date is string && data.date == dateId
+        && data.uniqueVisitors is number && data.uniqueVisitors >= 0 && data.uniqueVisitors <= 1
+        && data.totalVisits is number && data.totalVisits == 1
+        && (!data.keys().hasAny(['mobileVisits']) || (data.mobileVisits is number && data.mobileVisits >= 0 && data.mobileVisits <= 1))
+        && (!data.keys().hasAny(['desktopVisits']) || (data.desktopVisits is number && data.desktopVisits >= 0 && data.desktopVisits <= 1))
+        && (!data.keys().hasAny(['pwaVisits']) || (data.pwaVisits is number && data.pwaVisits >= 0 && data.pwaVisits <= 1))
+        && data.updatedAt is string && data.updatedAt.size() <= 40;
+    }
+
+    function isValidVisitorStatIncrement(incomingData, existingData, dateId) {
+      let changed = incomingData.diff(existingData).affectedKeys();
+      return changed.hasOnly(['date', 'uniqueVisitors', 'totalVisits', 'mobileVisits', 'desktopVisits', 'pwaVisits', 'updatedAt'])
+        && incomingData.date is string && incomingData.date == dateId
+        && incomingData.updatedAt is string && incomingData.updatedAt.size() <= 40
+        && incomingData.totalVisits is number
+        && existingData.totalVisits is number
+        && incomingData.totalVisits >= existingData.totalVisits
+        && incomingData.totalVisits <= existingData.totalVisits + 1
+        && incomingData.uniqueVisitors is number
+        && incomingData.uniqueVisitors >= existingData.get('uniqueVisitors', 0)
+        && incomingData.uniqueVisitors <= existingData.get('uniqueVisitors', 0) + 1
+        && (!changed.hasAny(['mobileVisits']) || (
+          incomingData.mobileVisits is number
+          && incomingData.mobileVisits >= existingData.get('mobileVisits', 0)
+          && incomingData.mobileVisits <= existingData.get('mobileVisits', 0) + 1
+        ))
+        && (!changed.hasAny(['desktopVisits']) || (
+          incomingData.desktopVisits is number
+          && incomingData.desktopVisits >= existingData.get('desktopVisits', 0)
+          && incomingData.desktopVisits <= existingData.get('desktopVisits', 0) + 1
+        ))
+        && (!changed.hasAny(['pwaVisits']) || (
+          incomingData.pwaVisits is number
+          && incomingData.pwaVisits >= existingData.get('pwaVisits', 0)
+          && incomingData.pwaVisits <= existingData.get('pwaVisits', 0) + 1
+        ));
+    }
+
+    match /visitor_stats/{dateId} {
+      allow get: if isValidVisitorDateId(dateId) && isModerator();
+      allow list: if isModerator();
+      allow create: if isValidVisitorDateId(dateId) && isValidVisitorStatCreate(request.resource.data, dateId);
+      allow update: if isValidVisitorDateId(dateId) && (
+        isAdmin() ||
+        isValidVisitorStatIncrement(request.resource.data, resource.data, dateId)
+      );
+      allow delete: if isValidVisitorDateId(dateId) && isAdmin();
+    }
   }
 }

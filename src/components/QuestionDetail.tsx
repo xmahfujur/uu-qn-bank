@@ -39,12 +39,14 @@ import { db } from '../firebase/config';
 import { QuestionPaper, ExamType } from '../types';
 import EditQuestionModal from './EditQuestionModal';
 import { deleteQuestionWithImages } from '../utils/deleteQuestion';
+import UserAvatar from './UserAvatar';
 
 interface QuestionDetailProps {
   questionId: string;
   currentUser: any;
   onBack: () => void;
   onNavigateToQuestion: (id: string) => void;
+  onNavigateToUserProfile?: (uid: string, username?: string, photoURL?: string) => void;
   onTriggerAuth: () => void;
 }
 
@@ -53,6 +55,7 @@ export default function QuestionDetail({
   currentUser, 
   onBack, 
   onNavigateToQuestion,
+  onNavigateToUserProfile,
   onTriggerAuth
 }: QuestionDetailProps) {
   
@@ -91,6 +94,7 @@ export default function QuestionDetail({
   const [department, setDepartment] = useState<{ name: string; code: string } | null>(null);
   const [batch, setBatch] = useState<{ name: string } | null>(null);
   const [semester, setSemester] = useState<{ name: string } | null>(null);
+  const [uploaderProfile, setUploaderProfile] = useState<{ username?: string; photoURL?: string } | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<string | null>(null);
 
   // Load question details and increment view
@@ -131,6 +135,17 @@ export default function QuestionDetail({
             getDoc(doc(db, 'semesters', qData.semesterId)).then((snap) => {
               if (snap.exists()) setSemester({ name: snap.data().name });
             }).catch(e => console.error("Error loading semester", e));
+          }
+
+          // Load Uploader Profile (avatar & latest username)
+          setUploaderProfile(null);
+          if (qData.uploadedByUID) {
+            getDoc(doc(db, 'users', qData.uploadedByUID)).then((snap) => {
+              if (snap.exists()) {
+                const u = snap.data();
+                setUploaderProfile({ username: u.username, photoURL: u.photoURL });
+              }
+            }).catch(() => {});
           }
 
           // Load related questions in same department
@@ -764,11 +779,38 @@ export default function QuestionDetail({
                   {question.examType} Exam
                 </span>
               </div>
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-3">
                 <span className="text-slate-400 font-medium">Uploader Student</span>
-                <span className="font-semibold text-slate-800 dark:text-slate-200">
-                  @{currentUser && currentUser.uid === question.uploadedByUID ? currentUser.username : question.uploadedByUsername}
-                </span>
+                {(() => {
+                  const isOwnUpload = currentUser && currentUser.uid === question.uploadedByUID;
+                  const authorName = isOwnUpload
+                    ? currentUser.username
+                    : (uploaderProfile?.username || question.uploadedByUsername || 'scholar');
+                  const authorPhoto = isOwnUpload
+                    ? currentUser.photoURL
+                    : (uploaderProfile?.photoURL || '');
+
+                  if (question.uploadedByUID && onNavigateToUserProfile) {
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => onNavigateToUserProfile(question.uploadedByUID, authorName, authorPhoto)}
+                        className="group/uploader inline-flex items-center gap-2 px-2 py-1 -mr-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-900 font-semibold text-slate-800 dark:text-slate-200 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors cursor-pointer"
+                        title={`View @${authorName}'s profile`}
+                      >
+                        <UserAvatar src={authorPhoto} username={authorName} size="xs" />
+                        <span className="group-hover/uploader:underline">@{authorName}</span>
+                      </button>
+                    );
+                  }
+
+                  return (
+                    <span className="inline-flex items-center gap-2 font-semibold text-slate-800 dark:text-slate-200">
+                      <UserAvatar src={authorPhoto} username={authorName} size="xs" />
+                      <span>@{authorName}</span>
+                    </span>
+                  );
+                })()}
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-400 font-medium">Upload Date</span>

@@ -21,6 +21,7 @@ import {
 import { Department, Batch, Semester, UserProfile } from './types';
 import { sortSemestersDescending } from './utils/semesterSort';
 import { sortDepartmentsAlphabetically } from './utils/departmentSort';
+import { recordSiteVisit } from './utils/visitorAnalytics';
 
 // Import modular sub-components
 import Layout from './components/Layout';
@@ -33,6 +34,7 @@ import QuestionDetail from './components/QuestionDetail';
 import UploadModal from './components/UploadModal';
 import FacultyRanking from './components/FacultyRanking';
 import AcademicCalendar from './components/AcademicCalendar';
+import PublicProfile from './components/PublicProfile';
 
 import { Loader2 } from 'lucide-react';
 
@@ -47,6 +49,11 @@ export default function App() {
     'landing' | 'dashboard' | 'profile' | 'admin' | 'leaderboard' | 'faculty' | 'calendar'
   >('dashboard');
   const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null);
+  const [viewedUserProfile, setViewedUserProfile] = useState<{
+    uid: string;
+    fallbackUsername?: string;
+    fallbackPhotoURL?: string;
+  } | null>(null);
 
   // Global Academic Data Lists
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -72,12 +79,48 @@ export default function App() {
     }
   };
 
+  // Helper for read-only public profile navigation with history push state
+  const handleNavigateToUserProfile = (
+    uid: string | null,
+    fallbackUsername?: string,
+    fallbackPhotoURL?: string
+  ) => {
+    if (uid) {
+      window.history.pushState(
+        { type: 'public_profile', uid, fallbackUsername, fallbackPhotoURL },
+        ''
+      );
+      setSelectedQuestionId(null);
+      setViewedUserProfile({ uid, fallbackUsername, fallbackPhotoURL });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      if (window.history.state?.type === 'public_profile') {
+        window.history.back();
+      } else {
+        setViewedUserProfile(null);
+      }
+    }
+  };
+
+  useEffect(() => {
+    recordSiteVisit();
+  }, []);
+
   useEffect(() => {
     const handlePopState = (e: PopStateEvent) => {
       if (e.state && e.state.type === 'question_detail') {
         setSelectedQuestionId(e.state.questionId);
+        setViewedUserProfile(null);
+      } else if (e.state && e.state.type === 'public_profile') {
+        setSelectedQuestionId(null);
+        setViewedUserProfile({
+          uid: e.state.uid,
+          fallbackUsername: e.state.fallbackUsername,
+          fallbackPhotoURL: e.state.fallbackPhotoURL
+        });
       } else {
         setSelectedQuestionId(null);
+        setViewedUserProfile(null);
       }
     };
     window.addEventListener('popstate', handlePopState);
@@ -368,6 +411,7 @@ export default function App() {
       setActiveView={(view) => {
         setActiveView(view);
         setSelectedQuestionId(null);
+        setViewedUserProfile(null);
       }}
       onOpenUpload={() => setUploadOpen(true)}
     >
@@ -387,7 +431,20 @@ export default function App() {
               currentUser={currentUser}
               onBack={() => handleNavigateToQuestion(null)}
               onNavigateToQuestion={(id) => handleNavigateToQuestion(id)}
+              onNavigateToUserProfile={(uid, username, photoURL) =>
+                handleNavigateToUserProfile(uid, username, photoURL)
+              }
               onTriggerAuth={triggerGoogleLogin}
+            />
+          ) : viewedUserProfile ? (
+            <PublicProfile
+              userId={viewedUserProfile.uid}
+              fallbackUsername={viewedUserProfile.fallbackUsername}
+              fallbackPhotoURL={viewedUserProfile.fallbackPhotoURL}
+              departments={departments}
+              semesters={semesters}
+              onBack={() => handleNavigateToUserProfile(null)}
+              onNavigateToQuestion={(id) => handleNavigateToQuestion(id)}
             />
           ) : (
             <>
@@ -403,6 +460,9 @@ export default function App() {
                 <Dashboard
                   currentUser={currentUser}
                   onNavigateToQuestion={(id) => handleNavigateToQuestion(id)}
+                  onNavigateToUserProfile={(uid, username, photoURL) =>
+                    handleNavigateToUserProfile(uid, username, photoURL)
+                  }
                   departments={departments}
                   batches={batches}
                   semesters={semesters}

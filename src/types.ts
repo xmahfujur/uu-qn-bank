@@ -157,3 +157,13 @@ export interface SitePopupConfig {
   updatedAt: string;
   updatedByUsername?: string;
 }
+
+export interface DailyVisitorStat {
+  date: string; // YYYY-MM-DD (Asia/Dhaka campus date)
+  uniqueVisitors: number;
+  totalVisits: number;
+  mobileVisits?: number;
+  desktopVisits?: number;
+  pwaVisits?: number;
+  updatedAt: string;
+}

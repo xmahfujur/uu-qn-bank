@@ -43,7 +43,8 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Menu,
-  ChevronRight
+  ChevronRight,
+  Activity
 } from 'lucide-react';
 import { 
   collection, 
@@ -55,11 +56,12 @@ import {
   onSnapshot 
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
-import { Department, Batch, Semester, QuestionPaper, Report, UserProfile, Faculty, AuditLog } from '../types';
+import { Department, Batch, Semester, QuestionPaper, Report, UserProfile, Faculty, AuditLog, DailyVisitorStat } from '../types';
 import EditQuestionModal from './EditQuestionModal';
 import AuditLogsView from './AuditLogsView';
 import QuickPaperPreviewModal from './QuickPaperPreviewModal';
 import SitePopupAdminTab from './SitePopupAdminTab';
+import VisitorAnalyticsView from './VisitorAnalyticsView';
 import { compareSemesterNames, sortSemestersDescending } from '../utils/semesterSort';
 import { sortDepartmentsAlphabetically } from '../utils/departmentSort';
 import { deleteQuestionWithImages } from '../utils/deleteQuestion';
@@ -67,6 +69,7 @@ import { recordAuditLog } from '../utils/auditLogger';
 import { uploadSingleImageToImgBB } from '../utils/imageUploader';
 import { formatImageUrl, handleImageError } from '../utils/imageUrl';
 import { subscribeToSitePopupConfig } from '../utils/sitePopup';
+import { subscribeToVisitorStats, buildVisitorReportSummary } from '../utils/visitorAnalytics';
 
 interface AdminPanelProps {
   currentUser: any;
@@ -75,10 +78,10 @@ interface AdminPanelProps {
 
 export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminPanelProps) {
   // Navigation inside Admin Panel with session memory so changing items never resets view
-  const [activeTab, setActiveTab] = useState<'analytics' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'popup' | 'logs'>(() => {
+  const [activeTab, setActiveTab] = useState<'analytics' | 'visitors' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'popup' | 'logs'>(() => {
     try {
       const saved = sessionStorage.getItem('admin_active_tab');
-      if (saved && ['analytics', 'hierarchy', 'questions', 'users', 'reports', 'faculties', 'popup', 'logs'].includes(saved)) {
+      if (saved && ['analytics', 'visitors', 'hierarchy', 'questions', 'users', 'reports', 'faculties', 'popup', 'logs'].includes(saved)) {
         return saved as any;
       }
     } catch (e) {}
@@ -104,7 +107,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     });
   };
 
-  const handleTabChange = (tab: 'analytics' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'popup' | 'logs') => {
+  const handleTabChange = (tab: 'analytics' | 'visitors' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'popup' | 'logs') => {
     setActiveTab(tab);
     setMobileSidebarOpen(false);
     try {
@@ -136,6 +139,9 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
   const [faculties, setFaculties] = useState<Faculty[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [sitePopupEnabled, setSitePopupEnabled] = useState(false);
+  const [visitorStats, setVisitorStats] = useState<DailyVisitorStat[]>([]);
+  const [visitorStatsLoading, setVisitorStatsLoading] = useState(true);
+  const [visitorStatsError, setVisitorStatsError] = useState<string | null>(null);
 
   // Form states for adding Faculty
   const [newFacultyName, setNewFacultyName] = useState('');
@@ -305,6 +311,19 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       setSitePopupEnabled(Boolean(cfg.enabled));
     });
 
+    // 10. Daily Visitor Analytics Listener
+    const unsubVisitors = subscribeToVisitorStats(
+      (rows) => {
+        setVisitorStats(rows);
+        setVisitorStatsLoading(false);
+        setVisitorStatsError(null);
+      },
+      (err) => {
+        setVisitorStatsLoading(false);
+        setVisitorStatsError(err.message);
+      }
+    );
+
     return () => {
       unsubDepts();
       unsubBatches();
@@ -315,6 +334,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
       unsubFaculties();
       unsubAudit();
       unsubSitePopup();
+      unsubVisitors();
     };
   }, []);
 
@@ -327,6 +347,10 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
   const pendingQuestionsCount = useMemo(() => {
     return questions.filter(q => q.status === 'pending').length;
   }, [questions]);
+
+  const visitorSummary = useMemo(() => {
+    return buildVisitorReportSummary(visitorStats);
+  }, [visitorStats]);
 
   // --- HIERARCHY MANAGEMENT ---
 
@@ -1228,7 +1252,7 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
     setIsPreviewModalOpen(true);
   };
 
-  type AdminTabId = 'analytics' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'popup' | 'logs';
+  type AdminTabId = 'analytics' | 'visitors' | 'hierarchy' | 'questions' | 'users' | 'reports' | 'faculties' | 'popup' | 'logs';
 
   const navGroups: {
     group: string;
@@ -1250,6 +1274,14 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
           description: 'KPIs, moderation queue & recent system activity',
           icon: BarChart3,
           badge: null
+        },
+        {
+          id: 'visitors',
+          label: 'Visitor Reports',
+          description: 'Daily traffic report for today, yesterday, last 30 days & overall',
+          icon: Activity,
+          badge: visitorSummary.today.uniqueVisitors > 0 ? visitorSummary.today.uniqueVisitors : null,
+          badgeClass: 'bg-indigo-600 text-white'
         }
       ]
     },
@@ -1771,6 +1803,79 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
               </div>
             </div>
 
+            {/* Live Site Visitor Snapshot Strip */}
+            <div className="bg-white dark:bg-slate-950 p-6 sm:p-7 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                    <span>Website Visitor Report</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    Daily unique visitors and total sessions across key time windows
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleTabChange('visitors')}
+                  className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 cursor-pointer self-start sm:self-auto whitespace-nowrap"
+                >
+                  <span>Full Visitor Report</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/70 border border-slate-200/70 dark:border-slate-800">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    Today
+                  </p>
+                  <p className="text-2xl font-black font-mono tabular-nums text-indigo-600 dark:text-indigo-400 mt-1">
+                    {visitorSummary.today.uniqueVisitors.toLocaleString()}
+                  </p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums mt-1">
+                    {visitorSummary.today.totalVisits.toLocaleString()} sessions
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/70 border border-slate-200/70 dark:border-slate-800">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    Yesterday
+                  </p>
+                  <p className="text-2xl font-black font-mono tabular-nums text-emerald-600 dark:text-emerald-400 mt-1">
+                    {visitorSummary.yesterday.uniqueVisitors.toLocaleString()}
+                  </p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums mt-1">
+                    {visitorSummary.yesterday.totalVisits.toLocaleString()} sessions
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/70 border border-slate-200/70 dark:border-slate-800">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    Last 30 Days
+                  </p>
+                  <p className="text-2xl font-black font-mono tabular-nums text-slate-900 dark:text-white mt-1">
+                    {visitorSummary.last30.uniqueVisitors.toLocaleString()}
+                  </p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums mt-1">
+                    {visitorSummary.last30.totalVisits.toLocaleString()} sessions
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/70 border border-slate-200/70 dark:border-slate-800">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    Overall Total
+                  </p>
+                  <p className="text-2xl font-black font-mono tabular-nums text-slate-900 dark:text-white mt-1">
+                    {visitorSummary.overall.uniqueVisitors.toLocaleString()}
+                  </p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums mt-1">
+                    {visitorSummary.overall.totalVisits.toLocaleString()} sessions
+                  </p>
+                </div>
+              </div>
+            </div>
+
             {/* Quick Management Shortcuts */}
             <div className="bg-white dark:bg-slate-950 p-6 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800/80 shadow-xs space-y-6">
               <div>
@@ -1895,6 +2000,17 @@ export default function AdminPanel({ currentUser, onNavigateToQuestion }: AdminP
             </div>
 
           </div>
+        )}
+
+        {/* ----------------------------------------------------------------------- */}
+        {/* TAB 1B: VISITOR TRAFFIC & DAILY ANALYTICS REPORT                        */}
+        {/* ----------------------------------------------------------------------- */}
+        {activeTab === 'visitors' && (
+          <VisitorAnalyticsView
+            visitorStats={visitorStats}
+            loading={visitorStatsLoading}
+            error={visitorStatsError}
+          />
         )}
 
         {/* ----------------------------------------------------------------------- */}

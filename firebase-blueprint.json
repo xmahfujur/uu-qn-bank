@@ -168,6 +168,21 @@
         "sitePopup": { "type": "object" },
         "updatedAt": { "type": "string" }
       }
+    },
+    "DailyVisitorStat": {
+      "title": "DailyVisitorStat",
+      "description": "Aggregated daily website visitor and session statistics keyed by YYYY-MM-DD",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "maxLength": 10 },
+        "uniqueVisitors": { "type": "number" },
+        "totalVisits": { "type": "number" },
+        "mobileVisits": { "type": "number" },
+        "desktopVisits": { "type": "number" },
+        "pwaVisits": { "type": "number" },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["date", "uniqueVisitors", "totalVisits", "updatedAt"]
     }
   },
   "firestore": {
@@ -181,6 +196,7 @@
     "/academic_events/{eventId}": { "schema": "AcademicEvent", "description": "Academic events and exam dates" },
     "/faculties/{facultyId}": { "schema": "Faculty", "description": "Faculty directory members" },
     "/paper_images/{imageId}": { "schema": "PaperImage", "description": "Persistent paper page image storage" },
-    "/systemSettings/{settingId}": { "schema": "SystemSetting", "description": "System settings and watermark preferences" }
+    "/systemSettings/{settingId}": { "schema": "SystemSetting", "description": "System settings and watermark preferences" },
+    "/visitor_stats/{dateId}": { "schema": "DailyVisitorStat", "description": "Daily visitor counts, sessions, and device breakdown" }
   }
 }
