@@ -94,22 +94,38 @@ app.post('/api/ai/analyze-question', async (req, res) => {
 
     console.log(`Starting Gemini analysis for image URL: ${imageUrl}`);
 
-    // Download image on server to handle any CORS or retrieval issues and convert to base64
+    // Download image on server (supporting both external URLs and local /api/image/ or /uploads/ paths)
     let base64Data = '';
     let mimeType = 'image/jpeg';
     
     try {
-      const response = await fetch(imageUrl);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch image: ${response.statusText}`);
-      }
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      base64Data = buffer.toString('base64');
-      
-      const contentType = response.headers.get('content-type');
-      if (contentType) {
-        mimeType = contentType;
+      if (typeof imageUrl === 'string' && (imageUrl.startsWith('/api/image/') || imageUrl.startsWith('/uploads/'))) {
+        const fileName = path.basename(imageUrl.split('?')[0]);
+        const filePath = path.join(uploadsDir, fileName);
+        if (fs.existsSync(filePath)) {
+          base64Data = fs.readFileSync(filePath).toString('base64');
+        } else {
+          const snap = await getDoc(doc(serverDb, 'paper_images', fileName));
+          if (!snap.exists() || !snap.data()?.dataUrl) {
+            throw new Error('Stored paper image not found.');
+          }
+          const data = snap.data();
+          mimeType = data.contentType || 'image/jpeg';
+          base64Data = data.dataUrl.includes(',') ? data.dataUrl.split(',')[1] : data.dataUrl;
+        }
+      } else {
+        const response = await fetch(imageUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch image: ${response.statusText}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        base64Data = buffer.toString('base64');
+        
+        const contentType = response.headers.get('content-type');
+        if (contentType) {
+          mimeType = contentType;
+        }
       }
     } catch (downloadErr: any) {
       console.error('Error downloading image for analysis:', downloadErr);
@@ -215,8 +231,44 @@ app.post('/api/ai/summarize-pattern', async (req, res) => {
   }
 });
 
+// Helper: Persist compressed paper image to Firestore paper_images (+ disk cache) when ImgBB blocks server IP
+async function saveFallbackPaperImage(
+  buffer: Buffer,
+  mimeType: string,
+  safeName: string
+): Promise<{ url: string; id: string }> {
+  const normalizedBase = safeName.startsWith('uu_paper_')
+    ? safeName
+    : `uu_paper_${Date.now()}_${safeName}`;
+  const fileName = `${normalizedBase.substring(0, 80)}.jpg`;
+
+  try {
+    if (fs.existsSync(uploadsDir)) {
+      fs.writeFileSync(path.join(uploadsDir, fileName), buffer);
+    }
+  } catch {
+    // Ignore disk write failure on read-only filesystems
+  }
+
+  // Firestore document limit is 1 MB (~700 KB raw binary -> ~933 KB base64 dataUrl)
+  if (buffer.length > 680 * 1024) {
+    throw new Error('Image exceeds fallback storage limit (680 KB after compression).');
+  }
+
+  const dataUrl = `data:${mimeType};base64,${buffer.toString('base64')}`;
+  await setDoc(doc(serverDb, 'paper_images', fileName), {
+    dataUrl,
+    contentType: mimeType,
+    createdAt: new Date().toISOString()
+  });
+
+  const url = `/api/image/${fileName}`;
+  return { url, id: fileName };
+}
+
 // 3. API: Server-side ImgBB Upload Proxy (/api/upload)
-// Receives multipart FormData image and forwards to ImgBB using process.env.IMGBB_KEY
+// Receives multipart FormData image and forwards to ImgBB using process.env.IMGBB_KEY,
+// with automatic fallback to Firestore paper_images if ImgBB blocks cloud datacenter IPs (code 103/403).
 app.post('/api/upload', (req, res, next) => {
   upload.single('image')(req, res, (err: any) => {
     if (err) {
@@ -231,14 +283,6 @@ app.post('/api/upload', (req, res, next) => {
     next();
   });
 }, async (req, res) => {
-  const apiKey = process.env.IMGBB_KEY;
-  if (!apiKey || !apiKey.trim()) {
-    return res.status(500).json({
-      success: false,
-      error: 'Server upload configuration missing: IMGBB_KEY environment variable is not set.'
-    });
-  }
-
   const file = req.file;
   if (!file || !file.buffer || file.buffer.length === 0) {
     return res.status(400).json({
@@ -266,64 +310,107 @@ app.post('/api/upload', (req, res, next) => {
       .replace(/[^a-zA-Z0-9_-]/g, '_')
       .substring(0, 64) || `uu_paper_${Date.now()}`;
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 25000);
+  const apiKey = process.env.IMGBB_KEY?.trim();
+
+  if (apiKey) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+    try {
+      const formData = new FormData();
+      formData.append('key', apiKey);
+      formData.append('name', safeName);
+      const blob = new Blob([new Uint8Array(file.buffer)], { type: mimeType });
+      formData.append('image', blob, `${safeName}.jpg`);
+
+      const imgbbResponse = await fetch('https://api.imgbb.com/1/upload', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+        },
+        body: formData
+      });
+
+      const rawText = await imgbbResponse.text();
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        parsed = null;
+      }
+
+      if (imgbbResponse.ok && parsed?.success && parsed?.data?.url) {
+        return res.json({
+          success: true,
+          url: parsed.data.url,
+          data: {
+            url: parsed.data.url,
+            display_url: parsed.data.display_url || parsed.data.url,
+            deleteUrl: parsed.data.delete_url,
+            id: parsed.data.id
+          }
+        });
+      }
+
+      const upstreamStatus = imgbbResponse.status;
+      const errCode = parsed?.error?.code;
+      const errMsg: string = parsed?.error?.message || `ImgBB upload failed (HTTP ${upstreamStatus || 502}).`;
+      const isIpOrWafBlock =
+        upstreamStatus === 403 ||
+        errCode === 103 ||
+        /forbidden/i.test(errMsg);
+
+      if (!isIpOrWafBlock) {
+        const responseStatus =
+          upstreamStatus === 429 || (upstreamStatus >= 500 && upstreamStatus < 600)
+            ? upstreamStatus
+            : upstreamStatus >= 400 && upstreamStatus < 500
+            ? 400
+            : 502;
+
+        return res.status(responseStatus).json({
+          success: false,
+          error: errMsg
+        });
+      }
+
+      console.warn(`[/api/upload] ImgBB blocked server request (${errMsg}); using Firestore fallback.`);
+    } catch (err: any) {
+      const isTimeout = err?.name === 'AbortError';
+      console.warn('[/api/upload] ImgBB proxy error, trying fallback:', err?.message || err);
+      if (isTimeout) {
+        return res.status(504).json({
+          success: false,
+          error: 'ImgBB upload timed out. Please retry.'
+        });
+      }
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  } else {
+    console.warn('[/api/upload] IMGBB_KEY missing; using Firestore fallback storage.');
+  }
 
   try {
-    const formData = new FormData();
-    formData.append('key', apiKey.trim());
-    formData.append('name', safeName);
-    const blob = new Blob([new Uint8Array(file.buffer)], { type: mimeType });
-    formData.append('image', blob, `${safeName}.jpg`);
-
-    const imgbbResponse = await fetch('https://api.imgbb.com/1/upload', {
-      method: 'POST',
-      signal: controller.signal,
-      body: formData
-    });
-
-    const rawText = await imgbbResponse.text();
-    let parsed: any = null;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch {
-      parsed = null;
-    }
-
-    if (!imgbbResponse.ok || !parsed?.success || !parsed?.data?.url) {
-      const upstreamStatus = imgbbResponse.status;
-      const responseStatus =
-        upstreamStatus === 429 || (upstreamStatus >= 500 && upstreamStatus < 600)
-          ? upstreamStatus
-          : upstreamStatus >= 400 && upstreamStatus < 500
-          ? 400
-          : 502;
-
-      return res.status(responseStatus).json({
-        success: false,
-        error: parsed?.error?.message || `ImgBB upload failed (HTTP ${upstreamStatus || 502}).`
-      });
-    }
-
+    const saved = await saveFallbackPaperImage(file.buffer, mimeType, safeName);
     return res.json({
       success: true,
-      url: parsed.data.url,
+      url: saved.url,
       data: {
-        url: parsed.data.url,
-        display_url: parsed.data.display_url || parsed.data.url,
-        deleteUrl: parsed.data.delete_url,
-        id: parsed.data.id
+        url: saved.url,
+        display_url: saved.url,
+        id: saved.id,
+        storage: 'firestore-fallback'
       }
     });
-  } catch (err: any) {
-    const isTimeout = err?.name === 'AbortError';
-    console.error('[/api/upload] ImgBB proxy error:', err?.message || err);
-    return res.status(isTimeout ? 504 : 502).json({
+  } catch (fallbackErr: any) {
+    console.error('[/api/upload] Fallback storage failed:', fallbackErr?.message || fallbackErr);
+    return res.status(502).json({
       success: false,
-      error: isTimeout ? 'ImgBB upload timed out. Please retry.' : 'Network error communicating with ImgBB.'
+      error: fallbackErr?.message || 'Image upload failed on both ImgBB and fallback storage.'
     });
-  } finally {
-    clearTimeout(timeoutId);
   }
 });
 

@@ -21,15 +21,7 @@
       "destination": "https://<MY_PROJECT_ID>.firebaseapp.com/__/firebase/init.json"
     },
     {
-      "source": "/api/upload",
-      "destination": "/api/upload.ts"
-    },
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/index.ts"
-    },
-    {
-      "source": "/(.*)",
+      "source": "/((?!api/|__/auth/|__/firebase/).*)",
       "destination": "/index.html"
     }
   ]

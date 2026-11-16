@@ -11,7 +11,10 @@ import {
   Pencil,
   Save,
   Zap,
-  Trash2
+  Trash2,
+  ArrowUp,
+  ArrowDown,
+  GripVertical
 } from 'lucide-react';
 import { 
   collection, 
@@ -68,10 +71,37 @@ export default function EditQuestionModal({ isOpen, onClose, question, currentUs
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  // Server Upload State
+  // Server Upload & Reorder State
   const [isUploadingFiles, setIsUploadingFiles] = useState(false);
   const [uploadStatusText, setUploadStatusText] = useState('');
   const [dragActive, setDragActive] = useState(false);
+  const [draggedPageIndex, setDraggedPageIndex] = useState<number | null>(null);
+  const [dragOverPageIndex, setDragOverPageIndex] = useState<number | null>(null);
+
+  const handleReorderPage = (fromIndex: number, toIndex: number) => {
+    if (
+      fromIndex === toIndex ||
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= imageUrls.length ||
+      toIndex >= imageUrls.length
+    ) {
+      return;
+    }
+    setImageUrls((prev) => {
+      const updated = [...prev];
+      const [moved] = updated.splice(fromIndex, 1);
+      updated.splice(toIndex, 0, moved);
+      return updated;
+    });
+    setDeleteUrls((prev) => {
+      if (prev.length === 0) return prev;
+      const padded = imageUrls.map((_, idx) => prev[idx] || '');
+      const [moved] = padded.splice(fromIndex, 1);
+      padded.splice(toIndex, 0, moved);
+      return padded;
+    });
+  };
 
   // Warn user before closing tab/window during active upload or submission
   useEffect(() => {
@@ -568,20 +598,109 @@ export default function EditQuestionModal({ isOpen, onClose, question, currentUs
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
                     Uploaded Page Previews
                   </label>
-                  <span className="text-[10px] text-slate-500">Verify image visibility before saving</span>
+                  <span className="text-[10px] text-slate-500">
+                    {imageUrls.length > 1
+                      ? 'Drag on desktop or tap ↑ ↓ to rearrange pages'
+                      : 'Verify image visibility before saving'}
+                  </span>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {imageUrls.map((url, index) => (
+                  {imageUrls.map((url, index) => {
+                    const isDragged = draggedPageIndex === index;
+                    const isDragTarget =
+                      dragOverPageIndex === index &&
+                      draggedPageIndex !== null &&
+                      draggedPageIndex !== index;
+                    return (
                     <div 
-                      key={index} 
-                      className="group relative bg-white dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800/80 rounded-xl p-3 shadow-sm flex flex-col justify-between space-y-2.5 transition-all hover:border-indigo-500/50"
+                      key={`${url}_${index}`}
+                      draggable={imageUrls.length > 1}
+                      onDragStart={(e) => {
+                        setDraggedPageIndex(index);
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', String(index));
+                      }}
+                      onDragOver={(e) => {
+                        if (draggedPageIndex === null) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.dataTransfer.dropEffect = 'move';
+                        if (dragOverPageIndex !== index) {
+                          setDragOverPageIndex(index);
+                        }
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverPageIndex === index) {
+                          setDragOverPageIndex(null);
+                        }
+                      }}
+                      onDrop={(e) => {
+                        if (draggedPageIndex === null) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleReorderPage(draggedPageIndex, index);
+                        setDraggedPageIndex(null);
+                        setDragOverPageIndex(null);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedPageIndex(null);
+                        setDragOverPageIndex(null);
+                      }}
+                      className={`group relative bg-white dark:bg-slate-950 border rounded-xl p-3 shadow-sm flex flex-col justify-between space-y-2.5 transition-all ${
+                        isDragged
+                          ? 'opacity-50 border-indigo-400 scale-[0.98]'
+                          : isDragTarget
+                          ? 'border-indigo-500 ring-2 ring-indigo-500/40 bg-indigo-50/30 dark:bg-indigo-950/20'
+                          : 'border-slate-200/80 dark:border-slate-800/80 hover:border-indigo-500/50'
+                      }`}
                     >
-                      {/* Header: Page Badge & Controls */}
-                      <div className="flex items-center justify-between">
-                        <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 text-[10px] font-extrabold uppercase tracking-wider rounded-md">
-                          Page {index + 1}
-                        </span>
+                      {/* Header: Page Badge, Reorder Controls & Delete */}
+                      <div className="flex items-center justify-between gap-1.5">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          {imageUrls.length > 1 && (
+                            <span
+                              className="hidden sm:inline-flex p-0.5 text-slate-400 hover:text-indigo-500 cursor-grab active:cursor-grabbing shrink-0"
+                              title="Drag to reorder"
+                            >
+                              <GripVertical className="w-3.5 h-3.5" />
+                            </span>
+                          )}
+                          <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 text-[10px] font-extrabold uppercase tracking-wider rounded-md shrink-0">
+                            Page {index + 1}
+                          </span>
+
+                          {imageUrls.length > 1 && (
+                            <div className="flex items-center gap-0.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-0.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleReorderPage(index, index - 1);
+                                }}
+                                disabled={index === 0}
+                                className="p-1 rounded text-slate-600 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-800 disabled:opacity-25 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                                title="Move Earlier"
+                                aria-label={`Move Page ${index + 1} earlier`}
+                              >
+                                <ArrowUp className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleReorderPage(index, index + 1);
+                                }}
+                                disabled={index === imageUrls.length - 1}
+                                className="p-1 rounded text-slate-600 dark:text-slate-300 hover:bg-slate-200/80 dark:hover:bg-slate-800 disabled:opacity-25 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                                title="Move Later"
+                                aria-label={`Move Page ${index + 1} later`}
+                              >
+                                <ArrowDown className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
                         
                         <button
                           type="button"
@@ -622,7 +741,8 @@ export default function EditQuestionModal({ isOpen, onClose, question, currentUs
                         />
                       </div>
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
 
                 {/* Button to Add One More Image Page */}

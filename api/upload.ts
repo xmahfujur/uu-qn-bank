@@ -1,5 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'http';
+import fs from 'fs';
+import path from 'path';
 import multer from 'multer';
+import { initializeApp, getApps } from 'firebase/app';
+import { getFirestore, doc, setDoc } from 'firebase/firestore';
 
 export const config = {
   api: {
@@ -24,6 +28,14 @@ const upload = multer({
     fileSize: 15 * 1024 * 1024, // 15MB max after client compression
   },
 });
+
+function getFallbackFirestore() {
+  const cfgPath = path.join(process.cwd(), 'firebase-applet-config.json');
+  const firebaseConfig = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  const existing = getApps().find((a) => a.name === 'vercel-upload-fallback');
+  const app = existing || initializeApp(firebaseConfig, 'vercel-upload-fallback');
+  return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+}
 
 function runMulterMiddleware(req: any, res: any): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -53,8 +65,8 @@ export default async function handler(req: VercelLikeRequest, res: VercelLikeRes
     return sendJson(res, 405, { success: false, error: 'Method not allowed. Use POST.' });
   }
 
-  const apiKey = process.env.IMGBB_KEY;
-  if (!apiKey || !apiKey.trim()) {
+  const apiKey = process.env.IMGBB_KEY?.trim();
+  if (!apiKey) {
     return sendJson(res, 500, {
       success: false,
       error: 'Server upload configuration missing: IMGBB_KEY environment variable is not set.',
@@ -106,7 +118,7 @@ export default async function handler(req: VercelLikeRequest, res: VercelLikeRes
 
   try {
     const formData = new FormData();
-    formData.append('key', apiKey.trim());
+    formData.append('key', apiKey);
     formData.append('name', safeName);
     const blob = new Blob([new Uint8Array(file.buffer)], { type: mimeType });
     formData.append('image', blob, `${safeName}.jpg`);
@@ -114,6 +126,11 @@ export default async function handler(req: VercelLikeRequest, res: VercelLikeRes
     const imgbbResponse = await fetch('https://api.imgbb.com/1/upload', {
       method: 'POST',
       signal: controller.signal,
+      headers: {
+        Accept: 'application/json',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      },
       body: formData,
     });
 
@@ -125,38 +142,67 @@ export default async function handler(req: VercelLikeRequest, res: VercelLikeRes
       parsed = null;
     }
 
-    if (!imgbbResponse.ok || !parsed?.success || !parsed?.data?.url) {
-      const upstreamStatus = imgbbResponse.status;
-      // Preserve 429 and 5xx statuses so client exponential backoff retries properly
-      const responseStatus =
-        upstreamStatus === 429 || (upstreamStatus >= 500 && upstreamStatus < 600)
-          ? upstreamStatus
-          : upstreamStatus >= 400 && upstreamStatus < 500
-          ? 400
-          : 502;
+    if (imgbbResponse.ok && parsed?.success && parsed?.data?.url) {
+      const uploadedUrl: string = parsed.data.url;
+      const displayUrl: string = parsed.data.display_url || uploadedUrl;
+      const deleteUrl: string | undefined = parsed.data.delete_url;
+      const id: string | undefined = parsed.data.id;
 
-      return sendJson(res, responseStatus, {
-        success: false,
-        error:
-          parsed?.error?.message ||
-          `ImgBB upload failed (HTTP ${upstreamStatus || 502}).`,
+      return sendJson(res, 200, {
+        success: true,
+        url: uploadedUrl,
+        data: {
+          url: uploadedUrl,
+          display_url: displayUrl,
+          deleteUrl,
+          id,
+        },
       });
     }
 
-    const uploadedUrl: string = parsed.data.url;
-    const displayUrl: string = parsed.data.display_url || uploadedUrl;
-    const deleteUrl: string | undefined = parsed.data.delete_url;
-    const id: string | undefined = parsed.data.id;
+    const upstreamStatus = imgbbResponse.status;
+    const errCode = parsed?.error?.code;
+    const errMsg: string =
+      parsed?.error?.message || `ImgBB upload failed (HTTP ${upstreamStatus || 502}).`;
+    const isIpOrWafBlock =
+      upstreamStatus === 403 || errCode === 103 || /forbidden/i.test(errMsg);
 
-    return sendJson(res, 200, {
-      success: true,
-      url: uploadedUrl,
-      data: {
-        url: uploadedUrl,
-        display_url: displayUrl,
-        deleteUrl,
-        id,
-      },
+    if (isIpOrWafBlock && file.buffer.length <= 680 * 1024) {
+      const normalizedBase = safeName.startsWith('uu_paper_')
+        ? safeName
+        : `uu_paper_${Date.now()}_${safeName}`;
+      const fileName = `${normalizedBase.substring(0, 80)}.jpg`;
+      const db = getFallbackFirestore();
+      const dataUrl = `data:${mimeType};base64,${file.buffer.toString('base64')}`;
+      await setDoc(doc(db, 'paper_images', fileName), {
+        dataUrl,
+        contentType: mimeType,
+        createdAt: new Date().toISOString(),
+      });
+      const fallbackUrl = `/api/image/${fileName}`;
+      return sendJson(res, 200, {
+        success: true,
+        url: fallbackUrl,
+        data: {
+          url: fallbackUrl,
+          display_url: fallbackUrl,
+          id: fileName,
+          storage: 'firestore-fallback',
+        },
+      });
+    }
+
+    // Preserve 429 and 5xx statuses so client exponential backoff retries properly
+    const responseStatus =
+      upstreamStatus === 429 || (upstreamStatus >= 500 && upstreamStatus < 600)
+        ? upstreamStatus
+        : upstreamStatus >= 400 && upstreamStatus < 500
+        ? 400
+        : 502;
+
+    return sendJson(res, responseStatus, {
+      success: false,
+      error: errMsg,
     });
   } catch (err: any) {
     const isTimeout = err?.name === 'AbortError';

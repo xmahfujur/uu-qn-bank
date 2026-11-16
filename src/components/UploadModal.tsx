@@ -1,4 +1,23 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  DndContext,
+  DragOverlay,
+  DragStartEvent,
+  DragEndEvent,
+  KeyboardSensor,
+  MouseSensor,
+  TouchSensor,
+  closestCenter,
+  useSensor,
+  useSensors
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  rectSortingStrategy,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy
+} from '@dnd-kit/sortable';
 import Cropper from 'react-easy-crop';
 import { getCroppedImg } from '../utils/cropImage';
 import { 
@@ -42,7 +61,7 @@ import { db } from '../firebase/config';
 import { Department, Batch, Semester, ExamType } from '../types';
 import { sortSemestersDescending } from '../utils/semesterSort';
 import { sortDepartmentsAlphabetically } from '../utils/departmentSort';
-import { formatImageUrl, handleImageError } from '../utils/imageUrl';
+import { formatImageUrl } from '../utils/imageUrl';
 import {
   uploadSingleImageToImgBBWithDetails,
   deleteImagesFromImgBB,
@@ -53,6 +72,12 @@ import {
   UPLOAD_CONCURRENCY_LIMIT
 } from '../utils/imageUploader';
 import FreeCropEditor from './FreeCropEditor';
+import {
+  SortablePreviewCard,
+  SortableOrganizerCard,
+  SortableFileListRow,
+  SortablePageDragOverlay
+} from './SortableUploadPageCard';
 
 interface UploadModalProps {
   isOpen: boolean;
@@ -220,6 +245,20 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
   const [retakeIndex, setRetakeIndex] = useState<number | null>(null);
   const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
   const [expandedPreviewUrl, setExpandedPreviewUrl] = useState<string | null>(null);
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  const [activeDragSource, setActiveDragSource] = useState<'list' | 'grid' | 'organizer' | null>(null);
+
+  const dndSensors = useSensors(
+    useSensor(MouseSensor, {
+      activationConstraint: { distance: 5 }
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 80, tolerance: 8 }
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates
+    })
+  );
 
   const isUploadingFiles = capturedPages.some(
     (p) => p.status === 'pending' || p.status === 'uploading' || p.isUploading
@@ -327,28 +366,53 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     }
   };
 
+  // Reorder page to target index (used by arrow controls)
+  const handleReorderPage = (fromIndex: number, toIndex: number) => {
+    if (
+      fromIndex === toIndex ||
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= capturedPages.length ||
+      toIndex >= capturedPages.length
+    ) {
+      return;
+    }
+    setCapturedPages((prev) => arrayMove(prev, fromIndex, toIndex));
+  };
+
+  const handleDndDragStart = (source: 'list' | 'grid' | 'organizer') => (event: DragStartEvent) => {
+    setActiveDragSource(source);
+    setActiveDragId(String(event.active.id));
+  };
+
+  const handleDndDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    setActiveDragId(null);
+    setActiveDragSource(null);
+    if (!over || active.id === over.id) return;
+    setCapturedPages((prev) => {
+      const oldIndex = prev.findIndex((p) => p.id === String(active.id));
+      const newIndex = prev.findIndex((p) => p.id === String(over.id));
+      if (oldIndex === -1 || newIndex === -1) return prev;
+      return arrayMove(prev, oldIndex, newIndex);
+    });
+  };
+
+  const handleDndDragCancel = () => {
+    setActiveDragId(null);
+    setActiveDragSource(null);
+  };
+
   // Reorder page up
   const handleMovePageUp = (index: number) => {
     if (index <= 0) return;
-    setCapturedPages(prev => {
-      const updated = [...prev];
-      const temp = updated[index - 1];
-      updated[index - 1] = updated[index];
-      updated[index] = temp;
-      return updated;
-    });
+    handleReorderPage(index, index - 1);
   };
 
   // Reorder page down
   const handleMovePageDown = (index: number) => {
     if (index >= capturedPages.length - 1) return;
-    setCapturedPages(prev => {
-      const updated = [...prev];
-      const temp = updated[index + 1];
-      updated[index + 1] = updated[index];
-      updated[index] = temp;
-      return updated;
-    });
+    handleReorderPage(index, index + 1);
   };
 
   // Upload a single CapturedPage entry updating status strictly by page.id (preserving order)
@@ -1357,12 +1421,16 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
             {/* Immediate Paper Pages Preview Grid */}
             {capturedPages.length > 0 && (
               <div className="space-y-3 pt-2">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
                       Page Previews ({capturedPages.length} {capturedPages.length === 1 ? 'Page' : 'Pages'})
                     </label>
-                    <p className="text-[10px] text-slate-500">Live preview of your pages. You can crop, reorder, or scan with AI.</p>
+                    <p className="text-[10px] text-slate-500">
+                      {capturedPages.length > 1
+                        ? 'Drag the ⋮⋮ handle (touch or mouse) or tap ↑ ↓ arrows to rearrange page order.'
+                        : 'Live preview of your pages. You can crop, reorder, or scan with AI.'}
+                    </p>
                   </div>
                   <button
                     type="button"
@@ -1393,178 +1461,71 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
                     )}
                   </div>
 
-                  <div className="max-h-36 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-900 text-[11px]">
-                    {capturedPages.map((page, index) => (
-                      <div key={page.id} className="py-1.5 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-900 rounded font-bold text-slate-600 dark:text-slate-300 shrink-0">
-                            P{index + 1}
-                          </span>
-                          <span className="truncate text-slate-700 dark:text-slate-300 font-medium">
-                            {page.originalName || page.file?.name || `Page ${index + 1}`}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {page.status === 'pending' && (
-                            <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-semibold rounded">
-                              pending
-                            </span>
-                          )}
-                          {page.status === 'uploading' && (
-                            <span className="px-2 py-0.5 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 font-semibold rounded flex items-center gap-1">
-                              <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                              {page.attemptText || 'uploading'}
-                            </span>
-                          )}
-                          {page.status === 'done' && (
-                            <span className="px-2 py-0.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 font-semibold rounded flex items-center gap-1">
-                              <CheckCircle2 className="w-2.5 h-2.5" />
-                              done
-                            </span>
-                          )}
-                          {page.status === 'failed' && (
-                            <button
-                              type="button"
-                              onClick={() => handleRetryUpload(page.id)}
-                              className="px-2 py-0.5 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 text-rose-700 dark:text-rose-300 font-bold rounded flex items-center gap-1 cursor-pointer"
-                              title={page.uploadError || 'Retry this page'}
-                            >
-                              <RotateCcw className="w-2.5 h-2.5" />
-                              <span>failed · retry</span>
-                            </button>
-                          )}
-                        </div>
+                  <DndContext
+                    sensors={dndSensors}
+                    collisionDetection={closestCenter}
+                    onDragStart={handleDndDragStart('list')}
+                    onDragEnd={handleDndDragEnd}
+                    onDragCancel={handleDndDragCancel}
+                  >
+                    <SortableContext
+                      items={capturedPages.map((p) => p.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      <div className="max-h-40 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-900 text-[11px]">
+                        {capturedPages.map((page, index) => (
+                          <SortableFileListRow
+                            key={page.id}
+                            page={page}
+                            index={index}
+                            totalCount={capturedPages.length}
+                            onRetryUpload={handleRetryUpload}
+                          />
+                        ))}
                       </div>
-                    ))}
-                  </div>
+                    </SortableContext>
+                  </DndContext>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {capturedPages.map((page, index) => {
-                    const previewSrc = page.dataUrl || (page.uploadedUrl ? formatImageUrl(page.uploadedUrl) : '');
-                    return (
-                      <div 
-                        key={page.id || index} 
-                        className="group relative bg-white dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800/80 rounded-xl p-3 shadow-sm flex flex-col justify-between space-y-2.5 transition-all hover:border-indigo-500/50"
-                      >
-                        {/* Header: Page Badge & Controls */}
-                        <div className="flex items-center justify-between">
-                          <span className="px-2.5 py-1 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/80 text-[11px] font-bold rounded-md">
-                            Page {index + 1}
-                          </span>
-                          
-                          <div className="flex items-center gap-1">
-                            {/* AI Scan button for page 1 */}
-                            {index === 0 && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleAIExtract();
-                                }}
-                                disabled={isAnalyzing || (!page.uploadedUrl && !page.dataUrl)}
-                                className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-[10px] font-bold rounded-lg flex items-center gap-1 shadow-sm transition-all cursor-pointer"
-                                title="Scan Page 1 with AI OCR to auto-fill course code and title"
-                              >
-                                {isAnalyzing ? (
-                                  <Loader2 className="w-3 h-3 animate-spin" />
-                                ) : (
-                                  <Sparkles className="w-3 h-3 text-amber-300" />
-                                )}
-                                <span>AI Scan</span>
-                              </button>
-                            )}
-
-                            {/* Remove */}
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveCapturedPage(index)}
-                              className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer"
-                              title="Delete page"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* High-Res Thumbnail Preview with Instant Local Rendering & Overlay Status */}
-                        <div 
-                          onClick={() => previewSrc && setExpandedPreviewUrl(previewSrc)}
-                          className="relative h-44 bg-slate-900 rounded-lg overflow-hidden border border-slate-800 flex items-center justify-center p-1 cursor-pointer group-hover:border-indigo-500/40 transition-colors"
-                        >
-                          {previewSrc ? (
-                            <img 
-                              src={previewSrc} 
-                              alt={`Page ${index + 1} Preview`} 
-                              className="w-full h-full object-contain rounded"
-                              referrerPolicy="no-referrer"
-                              onError={(e) => {
-                                if (page.file) {
-                                  try {
-                                    e.currentTarget.src = URL.createObjectURL(page.file);
-                                    return;
-                                  } catch {}
-                                }
-                                if (page.uploadedUrl && e.currentTarget.src !== formatImageUrl(page.uploadedUrl)) {
-                                  e.currentTarget.src = formatImageUrl(page.uploadedUrl);
-                                  return;
-                                }
-                                handleImageError(e, `Page ${index + 1}`);
-                              }}
-                            />
-                          ) : (
-                            <div className="flex flex-col items-center justify-center text-slate-400 text-xs">
-                              <ImageIcon className="w-8 h-8 opacity-40 mb-1" />
-                              <span>Loading preview...</span>
-                            </div>
-                          )}
-
-                          {/* Status Badge Overlay */}
-                          <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-none">
-                            {page.status === 'pending' ? (
-                              <span className="px-2 py-1 bg-slate-950/80 backdrop-blur-md text-slate-200 border border-slate-600/40 text-[10px] font-bold rounded-md flex items-center gap-1.5 shadow-sm">
-                                Pending...
-                              </span>
-                            ) : page.status === 'uploading' || page.isUploading ? (
-                              <span className="px-2 py-1 bg-slate-950/80 backdrop-blur-md text-amber-300 border border-amber-400/30 text-[10px] font-bold rounded-md flex items-center gap-1.5 shadow-sm">
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                {page.attemptText || 'Uploading...'}
-                              </span>
-                            ) : page.status === 'failed' || page.uploadError ? (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  e.preventDefault();
-                                  handleRetryUpload(page.id);
-                                }}
-                                onTouchEnd={(e) => {
-                                  e.stopPropagation();
-                                  e.preventDefault();
-                                  handleRetryUpload(page.id);
-                                }}
-                                className="pointer-events-auto px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white rounded-lg text-[10px] font-bold flex items-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer border border-rose-400/50"
-                                title="Tap to retry upload"
-                              >
-                                <RotateCcw className="w-3 h-3" />
-                                <span>Failed · Tap to Retry</span>
-                              </button>
-                            ) : (
-                              <span className="px-2 py-0.5 bg-emerald-950/80 backdrop-blur-md text-emerald-300 border border-emerald-500/30 text-[10px] font-bold rounded-md flex items-center gap-1 shadow-sm">
-                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                                Ready
-                              </span>
-                            )}
-
-                            <span className="pointer-events-auto px-1.5 py-0.5 bg-slate-950/80 hover:bg-slate-900 text-white/80 text-[9px] rounded font-medium flex items-center gap-1 border border-slate-700/60 shadow-sm backdrop-blur-sm">
-                              <Maximize2 className="w-2.5 h-2.5" /> Tap to view
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                <DndContext
+                  sensors={dndSensors}
+                  collisionDetection={closestCenter}
+                  onDragStart={handleDndDragStart('grid')}
+                  onDragEnd={handleDndDragEnd}
+                  onDragCancel={handleDndDragCancel}
+                >
+                  <SortableContext
+                    items={capturedPages.map((p) => p.id)}
+                    strategy={rectSortingStrategy}
+                  >
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {capturedPages.map((page, index) => (
+                        <SortablePreviewCard
+                          key={page.id || index}
+                          page={page}
+                          index={index}
+                          totalCount={capturedPages.length}
+                          isAnalyzing={isAnalyzing}
+                          onMoveUp={handleMovePageUp}
+                          onMoveDown={handleMovePageDown}
+                          onAIExtract={handleAIExtract}
+                          onRemove={handleRemoveCapturedPage}
+                          onExpandPreview={(url) => setExpandedPreviewUrl(url)}
+                          onRetryUpload={handleRetryUpload}
+                        />
+                      ))}
+                    </div>
+                  </SortableContext>
+                  <DragOverlay adjustScale={false}>
+                    {activeDragSource === 'grid' && activeDragId ? (() => {
+                      const activeIndex = capturedPages.findIndex((p) => p.id === activeDragId);
+                      const activePage = activeIndex >= 0 ? capturedPages[activeIndex] : null;
+                      return activePage ? (
+                        <SortablePageDragOverlay page={activePage} pageNumber={activeIndex + 1} />
+                      ) : null;
+                    })() : null}
+                  </DragOverlay>
+                </DndContext>
 
                 {/* Dual Add More Pages Buttons right below previews */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2">
@@ -1711,7 +1672,7 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
             {/* Info Banner */}
             <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-900/40 text-amber-900 dark:text-amber-200 text-xs flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-amber-500 shrink-0" />
-              <span>Use arrows to re-align page order, adjust crops, or add more pages.</span>
+              <span>Drag the ⋮⋮ handle or use ↑ ↓ arrows to re-align page order, adjust crops, or add more pages.</span>
             </div>
 
             {/* Captured Pages List */}
@@ -1740,103 +1701,45 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
                   </div>
                 </div>
               ) : (
-                capturedPages.map((item, idx) => (
-                  <div key={item.id} className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl p-3 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5">
-                        <span className="px-2.5 py-0.5 bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 font-black text-xs rounded-md uppercase">
-                          Page {idx + 1}
-                        </span>
-                        
-                        {/* Page Order Re-alignment Controls */}
-                        <div className="flex items-center gap-0.5 ml-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-0.5">
-                          <button
-                            type="button"
-                            onClick={() => handleMovePageUp(idx)}
-                            disabled={idx === 0}
-                            className="p-1 rounded text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-25 disabled:cursor-not-allowed cursor-pointer transition-colors"
-                            title="Move Page Up (Earlier)"
-                          >
-                            <ArrowUp className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleMovePageDown(idx)}
-                            disabled={idx === capturedPages.length - 1}
-                            className="p-1 rounded text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-25 disabled:cursor-not-allowed cursor-pointer transition-colors"
-                            title="Move Page Down (Later)"
-                          >
-                            <ArrowDown className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                      
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => handleStartCrop(idx)}
-                          className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold rounded-lg flex items-center gap-1 shadow-sm transition-all cursor-pointer"
-                        >
-                          <Crop className="w-3.5 h-3.5" />
-                          <span>Crop</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setExpandedPreviewUrl(item.dataUrl)}
-                          className="px-2 py-1 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[11px] font-bold rounded-lg flex items-center gap-1 hover:bg-slate-300 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-                        >
-                          <Maximize2 className="w-3 h-3" />
-                          <span>Inspect</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveCapturedPage(idx)}
-                          className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/40 rounded-lg transition-colors cursor-pointer"
-                          title="Delete page"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
+                <DndContext
+                  sensors={dndSensors}
+                  collisionDetection={closestCenter}
+                  onDragStart={handleDndDragStart('organizer')}
+                  onDragEnd={handleDndDragEnd}
+                  onDragCancel={handleDndDragCancel}
+                >
+                  <SortableContext
+                    items={capturedPages.map((p) => p.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <div className="space-y-4">
+                      {capturedPages.map((item, idx) => (
+                        <SortableOrganizerCard
+                          key={item.id}
+                          item={item}
+                          index={idx}
+                          totalCount={capturedPages.length}
+                          onMoveUp={handleMovePageUp}
+                          onMoveDown={handleMovePageDown}
+                          onStartCrop={handleStartCrop}
+                          onExpandPreview={(url) => setExpandedPreviewUrl(url)}
+                          onRemove={handleRemoveCapturedPage}
+                          onTriggerRetakeBrowse={handleTriggerRetakeBrowse}
+                          onTriggerRetakeCamera={handleTriggerRetakeCamera}
+                        />
+                      ))}
                     </div>
-
-                    {/* Image Preview Container */}
-                    <div className="relative h-52 bg-slate-900 rounded-lg overflow-hidden flex items-center justify-center p-1 border border-slate-800">
-                      <img 
-                        src={item.dataUrl} 
-                        alt={`Question Page ${idx + 1}`} 
-                        className="w-full h-full object-contain"
-                      />
-                    </div>
-
-                    {/* Action Buttons: Crop, Replace File, Retake Camera */}
-                    <div className="grid grid-cols-3 gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => handleStartCrop(idx)}
-                        className="py-1.5 px-2 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer"
-                      >
-                        <Crop className="w-3.5 h-3.5" />
-                        <span>Crop</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleTriggerRetakeBrowse(idx)}
-                        className="py-1.5 px-2 bg-slate-100 dark:bg-slate-800/80 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer"
-                      >
-                        <FolderPlus className="w-3.5 h-3.5 text-indigo-500" />
-                        <span>Replace File</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleTriggerRetakeCamera(idx)}
-                        className="py-1.5 px-2 bg-amber-400/10 hover:bg-amber-400/20 text-amber-700 dark:text-amber-300 border border-amber-400/30 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                        <span>Retake</span>
-                      </button>
-                    </div>
-                  </div>
-                ))
+                  </SortableContext>
+                  <DragOverlay adjustScale={false}>
+                    {activeDragSource === 'organizer' && activeDragId ? (() => {
+                      const activeIndex = capturedPages.findIndex((p) => p.id === activeDragId);
+                      const activePage = activeIndex >= 0 ? capturedPages[activeIndex] : null;
+                      return activePage ? (
+                        <SortablePageDragOverlay page={activePage} pageNumber={activeIndex + 1} />
+                      ) : null;
+                    })() : null}
+                  </DragOverlay>
+                </DndContext>
               )}
             </div>
 

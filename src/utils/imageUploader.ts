@@ -251,24 +251,48 @@ async function postFileOnceToApi(
     const response = await fetch('/api/upload', {
       method: 'POST',
       signal: controller.signal,
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json'
+      },
       body: formData
     });
 
-    const data = await response.json().catch(() => null);
+    const rawText = await response.text().catch(() => '');
+    let data: any = null;
+    if (rawText) {
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        data = null;
+      }
+    }
 
-    if (response.ok && data?.success && (data?.url || data?.data?.url)) {
-      const rawUrl = data.data?.url || data.url;
+    const resolvedUrl = data?.data?.url || data?.url || data?.data?.display_url;
+    if (response.ok && resolvedUrl && data?.success !== false) {
       return {
-        url: formatImageUrl(rawUrl),
-        deleteUrl: data.data?.deleteUrl || data.deleteUrl,
-        id: data.data?.id || safeName
+        url: formatImageUrl(resolvedUrl),
+        deleteUrl: data?.data?.deleteUrl || data?.deleteUrl,
+        id: data?.data?.id || safeName
       };
     }
 
-    const errorMessage = data?.error || `Upload failed with status ${response.status}`;
+    const looksLikeHtml =
+      typeof rawText === 'string' &&
+      (rawText.trimStart().startsWith('<!') || rawText.trimStart().toLowerCase().startsWith('<html'));
 
-    // Retry only on 429 and 5xx
-    if (response.status === 429 || (response.status >= 500 && response.status < 600)) {
+    const errorMessage =
+      data?.error ||
+      (looksLikeHtml
+        ? `Upload endpoint returned HTML instead of JSON (HTTP ${response.status}). Please refresh the page and try again.`
+        : `Upload failed with status ${response.status}`);
+
+    // Retry on 429, 5xx, or unexpected 200 HTML/non-JSON responses from proxies
+    if (
+      response.status === 429 ||
+      (response.status >= 500 && response.status < 600) ||
+      (response.ok && !data)
+    ) {
       throw new RetryableUploadError(errorMessage);
     }
 
