@@ -22,28 +22,20 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 const serverFirebaseApp = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig, 'server-storage-app');
 const serverDb = getFirestore(serverFirebaseApp, firebaseConfig.firestoreDatabaseId);
 
-// Ensure local uploads directory exists
+// Ensure local uploads directory exists when running on writable filesystem
 const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+} catch {
+  // Ignore on read-only serverless filesystems (e.g., Vercel)
 }
 
-// Configure Multer for streaming binary image uploads directly to disk
-const uploadStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, uploadsDir);
-  },
-  filename: (_req, file, cb) => {
-    const rawName = file.originalname || 'paper_page';
-    const safeBase = rawName.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 60);
-    const safeName = `${safeBase || `paper_${Date.now()}`}.jpg`;
-    cb(null, safeName);
-  }
-});
-
+// Configure Multer in-memory storage for proxying multipart uploads to ImgBB
 const upload = multer({
-  storage: uploadStorage,
-  limits: { fileSize: 30 * 1024 * 1024 } // 30MB maximum
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 } // 15MB maximum after client compression
 });
 
 // Serve uploaded question papers with disk + Firestore fallback
@@ -223,71 +215,115 @@ app.post('/api/ai/summarize-pattern', async (req, res) => {
   }
 });
 
-// 3. API: Resilient Self-Hosted & Multi-Tier Image Upload (/api/upload & /api/imgbb/upload)
-// Supports direct multipart binary streaming (via multer) AND base64 JSON payloads
-app.post(['/api/upload', '/api/imgbb/upload'], upload.single('image'), async (req, res) => {
+// 3. API: Server-side ImgBB Upload Proxy (/api/upload)
+// Receives multipart FormData image and forwards to ImgBB using process.env.IMGBB_KEY
+app.post('/api/upload', (req, res, next) => {
+  upload.single('image')(req, res, (err: any) => {
+    if (err) {
+      const status = err?.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+      return res.status(status).json({
+        success: false,
+        error: err?.code === 'LIMIT_FILE_SIZE'
+          ? 'Compressed image exceeds 15MB server limit.'
+          : err?.message || 'Invalid multipart image upload.'
+      });
+    }
+    next();
+  });
+}, async (req, res) => {
+  const apiKey = process.env.IMGBB_KEY;
+  if (!apiKey || !apiKey.trim()) {
+    return res.status(500).json({
+      success: false,
+      error: 'Server upload configuration missing: IMGBB_KEY environment variable is not set.'
+    });
+  }
+
+  const file = req.file;
+  if (!file || !file.buffer || file.buffer.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'No image file provided in "image" field.'
+    });
+  }
+
+  const mimeType = file.mimetype || 'image/jpeg';
+  if (!mimeType.startsWith('image/')) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid file type (${mimeType}). Only image uploads are allowed.`
+    });
+  }
+
+  const requestedName =
+    typeof req.body?.name === 'string' && req.body.name.trim()
+      ? req.body.name.trim()
+      : file.originalname || `uu_paper_${Date.now()}`;
+
+  const safeName =
+    requestedName
+      .replace(/\.[^/.]+$/, '')
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .substring(0, 64) || `uu_paper_${Date.now()}`;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 25000);
+
   try {
-    let fileName = '';
-    let buffer: Buffer | null = null;
-    let filePath = '';
+    const formData = new FormData();
+    formData.append('key', apiKey.trim());
+    formData.append('name', safeName);
+    const blob = new Blob([new Uint8Array(file.buffer)], { type: mimeType });
+    formData.append('image', blob, `${safeName}.jpg`);
 
-    // Mode A: Direct Binary Upload via Multer (req.file)
-    if (req.file) {
-      fileName = req.file.filename;
-      filePath = req.file.path;
-      try {
-        buffer = fs.readFileSync(filePath);
-      } catch (readErr: any) {
-        console.warn('[Server Storage] Buffer read notice:', readErr.message);
-      }
-    } 
-    // Mode B: JSON Base64 Payload (req.body.imageBase64)
-    else if (req.body?.imageBase64) {
-      const cleanBase64 = req.body.imageBase64.includes(',') ? req.body.imageBase64.split(',')[1] : req.body.imageBase64;
-      buffer = Buffer.from(cleanBase64, 'base64');
-      const safeBase = (req.body.name || 'question_page').replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 60);
-      fileName = `${safeBase || `paper_${Date.now()}`}.jpg`;
-      filePath = path.join(uploadsDir, fileName);
-      fs.writeFileSync(filePath, buffer);
-    } else {
-      return res.status(400).json({ success: false, error: 'No image file or imageBase64 provided.' });
+    const imgbbResponse = await fetch('https://api.imgbb.com/1/upload', {
+      method: 'POST',
+      signal: controller.signal,
+      body: formData
+    });
+
+    const rawText = await imgbbResponse.text();
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      parsed = null;
     }
 
-    // 2. Persist to Firestore paper_images for permanent backup if under 950KB
-    if (buffer && buffer.length < 950 * 1024) {
-      try {
-        const fullDataUrl = `data:image/jpeg;base64,${buffer.toString('base64')}`;
-        await setDoc(doc(serverDb, 'paper_images', fileName), {
-          fileName,
-          dataUrl: fullDataUrl,
-          contentType: 'image/jpeg',
-          createdAt: new Date().toISOString()
-        }, { merge: true });
-      } catch (dbErr: any) {
-        console.warn('[Server Storage] Firestore backup notice:', dbErr.message);
-      }
-    }
+    if (!imgbbResponse.ok || !parsed?.success || !parsed?.data?.url) {
+      const upstreamStatus = imgbbResponse.status;
+      const responseStatus =
+        upstreamStatus === 429 || (upstreamStatus >= 500 && upstreamStatus < 600)
+          ? upstreamStatus
+          : upstreamStatus >= 400 && upstreamStatus < 500
+          ? 400
+          : 502;
 
-    const localUrl = `/uploads/${fileName}`;
-    const fileSizeKb = buffer ? Math.round(buffer.length / 1024) : 0;
-    console.log(`[Server Storage] Successfully stored paper: ${localUrl} (${fileSizeKb} KB)`);
+      return res.status(responseStatus).json({
+        success: false,
+        error: parsed?.error?.message || `ImgBB upload failed (HTTP ${upstreamStatus || 502}).`
+      });
+    }
 
     return res.json({
       success: true,
+      url: parsed.data.url,
       data: {
-        url: localUrl,
-        display_url: localUrl,
-        deleteUrl: `/api/image/delete/${fileName}`,
-        id: fileName
+        url: parsed.data.url,
+        display_url: parsed.data.display_url || parsed.data.url,
+        deleteUrl: parsed.data.delete_url,
+        id: parsed.data.id
       }
     });
   } catch (err: any) {
-    console.error('[Server Storage] Exception:', err);
-    return res.status(500).json({
+    const isTimeout = err?.name === 'AbortError';
+    console.error('[/api/upload] ImgBB proxy error:', err?.message || err);
+    return res.status(isTimeout ? 504 : 502).json({
       success: false,
-      error: 'Internal server error saving paper image.',
-      details: err.message
+      error: isTimeout ? 'ImgBB upload timed out. Please retry.' : 'Network error communicating with ImgBB.'
     });
+  } finally {
+    clearTimeout(timeoutId);
   }
 });
 
@@ -331,7 +367,8 @@ app.get('/api/image/:name', async (req, res) => {
 // 4. API: Delete Images from ImgBB Automatically
 app.post('/api/imgbb/delete', async (req, res) => {
   try {
-    const { deleteUrls = [], imageUrls = [], apiKey = '559a1db9c9b114ebf42f3a39489be200' } = req.body;
+    const { deleteUrls = [], imageUrls = [] } = req.body;
+    const apiKey = process.env.IMGBB_KEY || '';
     const allDeleteUrls: string[] = Array.isArray(deleteUrls) ? deleteUrls.filter(Boolean) : [];
     const allImageUrls: string[] = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
 

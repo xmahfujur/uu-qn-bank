@@ -1,18 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
-import { 
-  collection, 
-  getDocs, 
-  addDoc, 
-  doc, 
-  getDoc,
-  setDoc,
+import {
+  collection,
+  getDocs,
+  addDoc,
+  doc,
   updateDoc,
   onSnapshot,
   query,
   where
 } from 'firebase/firestore';
-import { auth, db, syncUserProfile } from './firebase/config';
+import {
+  auth,
+  db,
+  syncUserProfile,
+  getInitialRedirectResultOnce,
+  mapFirebaseAuthError,
+  AuthErrorInfo
+} from './firebase/config';
 import { Department, Batch, Semester, UserProfile } from './types';
 import { sortSemestersDescending } from './utils/semesterSort';
 import { sortDepartmentsAlphabetically } from './utils/departmentSort';
@@ -32,12 +37,15 @@ import AcademicCalendar from './components/AcademicCalendar';
 import { Loader2 } from 'lucide-react';
 
 export default function App() {
-  // Authentication State
+  // Authentication State (onAuthStateChanged is the single source of truth)
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState<AuthErrorInfo | null>(null);
 
   // Active View router
-  const [activeView, setActiveView] = useState<'landing' | 'dashboard' | 'profile' | 'admin' | 'leaderboard' | 'faculty' | 'calendar'>('dashboard');
+  const [activeView, setActiveView] = useState<
+    'landing' | 'dashboard' | 'profile' | 'admin' | 'leaderboard' | 'faculty' | 'calendar'
+  >('dashboard');
   const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null);
 
   // Global Academic Data Lists
@@ -48,7 +56,7 @@ export default function App() {
 
   // Floating Universal Upload Modal state
   const [uploadOpen, setUploadOpen] = useState(false);
-  const [refreshDashboardTrigger, setRefreshDashboardTrigger] = useState(0);
+  const [, setRefreshDashboardTrigger] = useState(0);
 
   // Helper for question detail navigation with history push state
   const handleNavigateToQuestion = (id: string | null) => {
@@ -76,10 +84,39 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // --- 1. USER AUTH SEED & REAL-TIME PROFILE DETECTOR ---
+  // --- 1. USER AUTH SEED, REDIRECT RESOLUTION & SINGLE-SOURCE-OF-TRUTH LISTENER ---
   useEffect(() => {
-    let isInitial = true;
+    let isMounted = true;
+    let redirectResolved = false;
+    let authStateResolved = false;
     let unsubUserDoc: (() => void) | null = null;
+
+    const markLoadingDoneIfReady = () => {
+      if (isMounted && redirectResolved && authStateResolved) {
+        setAuthLoading(false);
+      }
+    };
+
+    // Call getRedirectResult(auth) ONCE on app start & keep authLoading true while resolving
+    getInitialRedirectResultOnce()
+      .then((result) => {
+        if (!isMounted) return;
+        if (result?.user) {
+          setAuthError(null);
+        }
+      })
+      .catch((err: any) => {
+        if (!isMounted) return;
+        const mapped = mapFirebaseAuthError(err);
+        // If user closed redirect/missing initial state quietly on normal visits, still log & only surface actionable errors
+        if (mapped) {
+          setAuthError(mapped);
+        }
+      })
+      .finally(() => {
+        redirectResolved = true;
+        markLoadingDoneIfReady();
+      });
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       if (unsubUserDoc) {
@@ -87,66 +124,75 @@ export default function App() {
         unsubUserDoc = null;
       }
 
-      if (isInitial) {
-        setAuthLoading(true);
-      }
+      if (!isMounted) return;
 
       if (firebaseUser) {
         try {
-          // 1. Initial synchronizer
           const profile = await syncUserProfile(firebaseUser);
+          if (!isMounted) return;
           setCurrentUser(profile);
+          setAuthError(null);
 
-          // 2. Real-time snapshot listener on the user's Firestore doc so ANY changes
-          // to username, role, or profile are instantly reflected in React state across the app!
-          unsubUserDoc = onSnapshot(doc(db, 'users', firebaseUser.uid), (docSnap) => {
-            if (docSnap.exists()) {
-              const data = docSnap.data() as UserProfile;
-              const isSuper = firebaseUser.email?.toLowerCase() === 'mr074770@gmail.com';
-              const authoritativeUsername = isSuper ? (data.username || 'mahfujur') : (data.username || profile.username);
+          unsubUserDoc = onSnapshot(
+            doc(db, 'users', firebaseUser.uid),
+            (docSnap) => {
+              if (!isMounted) return;
+              if (docSnap.exists()) {
+                const data = docSnap.data() as UserProfile;
+                const isSuper = firebaseUser.email?.toLowerCase() === 'mr074770@gmail.com';
+                const authoritativeUsername = isSuper
+                  ? data.username || 'mahfujur'
+                  : data.username || profile.username;
 
-              setCurrentUser(prev => ({
-                ...(prev || profile),
-                ...data,
-                username: authoritativeUsername,
-                role: isSuper ? 'super_admin' : (data.role || 'user')
-              }));
+                setCurrentUser((prev) => ({
+                  ...(prev || profile),
+                  ...data,
+                  username: authoritativeUsername,
+                  role: isSuper ? 'super_admin' : data.role || 'user'
+                }));
+              }
+            },
+            (err) => {
+              console.warn('User doc snapshot listener error:', err);
             }
-          }, (err) => {
-            console.warn('User doc snapshot listener error:', err);
-          });
+          );
 
-          // 3. Auto-sanitize existing questions authored by this user if they were saved with an old username
-          const targetUsername = (firebaseUser.email?.toLowerCase() === 'mr074770@gmail.com') ? 'mahfujur' : profile.username;
+          const targetUsername =
+            firebaseUser.email?.toLowerCase() === 'mr074770@gmail.com'
+              ? 'mahfujur'
+              : profile.username;
           if (targetUsername) {
-            query(collection(db, 'questions'), where('uploadedByUID', '==', firebaseUser.uid));
             getDocs(query(collection(db, 'questions'), where('uploadedByUID', '==', firebaseUser.uid)))
-              .then(snap => {
-                snap.forEach(qDoc => {
+              .then((snap) => {
+                snap.forEach((qDoc) => {
                   const qData = qDoc.data();
-                  if (qData.uploadedByUsername !== targetUsername && (qData.uploadedByUsername === 'mr074770' || !qData.uploadedByUsername)) {
-                    updateDoc(doc(db, 'questions', qDoc.id), { uploadedByUsername: targetUsername }).catch(() => null);
+                  if (
+                    qData.uploadedByUsername !== targetUsername &&
+                    (qData.uploadedByUsername === 'mr074770' || !qData.uploadedByUsername)
+                  ) {
+                    updateDoc(doc(db, 'questions', qDoc.id), {
+                      uploadedByUsername: targetUsername
+                    }).catch(() => null);
                   }
                 });
               })
               .catch(() => null);
           }
 
-          // Auto-direct to dashboard on first sign-in
-          if (activeView === 'landing') {
-            setActiveView('dashboard');
-          }
+          setActiveView((prev) => (prev === 'landing' ? 'dashboard' : prev));
         } catch (err) {
           console.error('Error syncing auth state profile:', err);
         }
       } else {
         setCurrentUser(null);
       }
-      setAuthLoading(false);
-      isInitial = false;
+
+      authStateResolved = true;
+      markLoadingDoneIfReady();
     });
 
     return () => {
+      isMounted = false;
       unsubscribeAuth();
       if (unsubUserDoc) unsubUserDoc();
     };
@@ -164,115 +210,125 @@ export default function App() {
       }
     };
 
-    // Real-time Departments Listener
-    const unsubDepts = onSnapshot(collection(db, 'departments'), async (snap) => {
-      // Auto-seed only if completely empty and admin is signed in
-      const isAdminUser = currentUser && (
-        currentUser.role === 'super_admin' || 
-        currentUser.email?.toLowerCase() === 'mr074770@gmail.com'
-      );
+    const unsubDepts = onSnapshot(
+      collection(db, 'departments'),
+      async (snap) => {
+        const activeUser = auth.currentUser;
+        const isAdminUser =
+          activeUser?.email?.toLowerCase() === 'mr074770@gmail.com' ||
+          currentUser?.role === 'super_admin';
 
-      if (snap.empty && isAdminUser) {
-        console.log('Uttara University database is empty and Admin is connected. Auto-seeding default academic hierarchy...');
-        try {
-          const cseRef = await addDoc(collection(db, 'departments'), {
-            name: 'Computer Science and Engineering',
-            code: 'CSE',
-            createdAt: new Date().toISOString()
-          });
-          const eeeRef = await addDoc(collection(db, 'departments'), {
-            name: 'Electrical and Electronic Engineering',
-            code: 'EEE',
-            createdAt: new Date().toISOString()
-          });
-          const bbaRef = await addDoc(collection(db, 'departments'), {
-            name: 'Business Administration',
-            code: 'BBA',
-            createdAt: new Date().toISOString()
-          });
+        if (snap.empty && isAdminUser) {
+          console.log(
+            'Uttara University database is empty and Admin is connected. Auto-seeding default academic hierarchy...'
+          );
+          try {
+            const cseRef = await addDoc(collection(db, 'departments'), {
+              name: 'Computer Science and Engineering',
+              code: 'CSE',
+              createdAt: new Date().toISOString()
+            });
+            const eeeRef = await addDoc(collection(db, 'departments'), {
+              name: 'Electrical and Electronic Engineering',
+              code: 'EEE',
+              createdAt: new Date().toISOString()
+            });
+            const bbaRef = await addDoc(collection(db, 'departments'), {
+              name: 'Business Administration',
+              code: 'BBA',
+              createdAt: new Date().toISOString()
+            });
 
-          const b60Ref = await addDoc(collection(db, 'batches'), {
-            departmentId: cseRef.id,
-            name: 'Batch 60',
-            createdAt: new Date().toISOString()
-          });
-          const b61Ref = await addDoc(collection(db, 'batches'), {
-            departmentId: cseRef.id,
-            name: 'Batch 61',
-            createdAt: new Date().toISOString()
-          });
-          const beeeRef = await addDoc(collection(db, 'batches'), {
-            departmentId: eeeRef.id,
-            name: 'Batch 48',
-            createdAt: new Date().toISOString()
-          });
-          const bbbaRef = await addDoc(collection(db, 'batches'), {
-            departmentId: bbaRef.id,
-            name: 'Batch 55',
-            createdAt: new Date().toISOString()
-          });
+            const b60Ref = await addDoc(collection(db, 'batches'), {
+              departmentId: cseRef.id,
+              name: 'Batch 60',
+              createdAt: new Date().toISOString()
+            });
+            await addDoc(collection(db, 'batches'), {
+              departmentId: cseRef.id,
+              name: 'Batch 61',
+              createdAt: new Date().toISOString()
+            });
+            const beeeRef = await addDoc(collection(db, 'batches'), {
+              departmentId: eeeRef.id,
+              name: 'Batch 48',
+              createdAt: new Date().toISOString()
+            });
+            const bbbaRef = await addDoc(collection(db, 'batches'), {
+              departmentId: bbaRef.id,
+              name: 'Batch 55',
+              createdAt: new Date().toISOString()
+            });
 
-          await addDoc(collection(db, 'semesters'), {
-            batchId: b60Ref.id,
-            name: 'Spring 2026',
-            createdAt: new Date().toISOString()
-          });
-          await addDoc(collection(db, 'semesters'), {
-            batchId: b60Ref.id,
-            name: 'Summer 2026',
-            createdAt: new Date().toISOString()
-          });
-          await addDoc(collection(db, 'semesters'), {
-            batchId: beeeRef.id,
-            name: 'Spring 2026',
-            createdAt: new Date().toISOString()
-          });
-          await addDoc(collection(db, 'semesters'), {
-            batchId: bbbaRef.id,
-            name: 'Spring 2026',
-            createdAt: new Date().toISOString()
-          });
-        } catch (seedErr) {
-          console.error('Seeding error:', seedErr);
+            await addDoc(collection(db, 'semesters'), {
+              batchId: b60Ref.id,
+              name: 'Spring 2026',
+              createdAt: new Date().toISOString()
+            });
+            await addDoc(collection(db, 'semesters'), {
+              batchId: b60Ref.id,
+              name: 'Summer 2026',
+              createdAt: new Date().toISOString()
+            });
+            await addDoc(collection(db, 'semesters'), {
+              batchId: beeeRef.id,
+              name: 'Spring 2026',
+              createdAt: new Date().toISOString()
+            });
+            await addDoc(collection(db, 'semesters'), {
+              batchId: bbbaRef.id,
+              name: 'Spring 2026',
+              createdAt: new Date().toISOString()
+            });
+          } catch (seedErr) {
+            console.error('Seeding error:', seedErr);
+          }
         }
+
+        const dList: Department[] = [];
+        snap.forEach((docSnap) => dList.push({ id: docSnap.id, ...docSnap.data() } as Department));
+        setDepartments(sortDepartmentsAlphabetically(dList));
+        deptsInitial = true;
+        checkAllLoaded();
+      },
+      (err) => {
+        console.error('Departments subscription error:', err);
+        deptsInitial = true;
+        checkAllLoaded();
       }
+    );
 
-      const dList: Department[] = [];
-      snap.forEach((doc) => dList.push({ id: doc.id, ...doc.data() } as Department));
-      setDepartments(sortDepartmentsAlphabetically(dList));
-      deptsInitial = true;
-      checkAllLoaded();
-    }, (err) => {
-      console.error('Departments subscription error:', err);
-      deptsInitial = true;
-      checkAllLoaded();
-    });
+    const unsubBatches = onSnapshot(
+      collection(db, 'batches'),
+      (snap) => {
+        const bList: Batch[] = [];
+        snap.forEach((docSnap) => bList.push({ id: docSnap.id, ...docSnap.data() } as Batch));
+        setBatches(bList);
+        batchesInitial = true;
+        checkAllLoaded();
+      },
+      (err) => {
+        console.error('Batches subscription error:', err);
+        batchesInitial = true;
+        checkAllLoaded();
+      }
+    );
 
-    // Real-time Batches Listener
-    const unsubBatches = onSnapshot(collection(db, 'batches'), (snap) => {
-      const bList: Batch[] = [];
-      snap.forEach((doc) => bList.push({ id: doc.id, ...doc.data() } as Batch));
-      setBatches(bList);
-      batchesInitial = true;
-      checkAllLoaded();
-    }, (err) => {
-      console.error('Batches subscription error:', err);
-      batchesInitial = true;
-      checkAllLoaded();
-    });
-
-    // Real-time Semesters Listener
-    const unsubSemesters = onSnapshot(collection(db, 'semesters'), (snap) => {
-      const sList: Semester[] = [];
-      snap.forEach((doc) => sList.push({ id: doc.id, ...doc.data() } as Semester));
-      setSemesters(sortSemestersDescending(sList));
-      semestersInitial = true;
-      checkAllLoaded();
-    }, (err) => {
-      console.error('Semesters subscription error:', err);
-      semestersInitial = true;
-      checkAllLoaded();
-    });
+    const unsubSemesters = onSnapshot(
+      collection(db, 'semesters'),
+      (snap) => {
+        const sList: Semester[] = [];
+        snap.forEach((docSnap) => sList.push({ id: docSnap.id, ...docSnap.data() } as Semester));
+        setSemesters(sortSemestersDescending(sList));
+        semestersInitial = true;
+        checkAllLoaded();
+      },
+      (err) => {
+        console.error('Semesters subscription error:', err);
+        semestersInitial = true;
+        checkAllLoaded();
+      }
+    );
 
     return () => {
       unsubDepts();
@@ -284,17 +340,12 @@ export default function App() {
   // Handle successful upload to trigger catalog updates
   async function handleUploadSuccess() {
     setRefreshDashboardTrigger((prev) => prev + 1);
-    
-    // Increment total contribution count for logged in user profile
+
     if (currentUser) {
       try {
         const userRef = doc(db, 'users', currentUser.uid);
         const nextUploadCount = (currentUser.uploadCount || 0) + 1;
         await updateDoc(userRef, {
-          uploadCount: nextUploadCount
-        });
-        setCurrentUser({
-          ...currentUser,
           uploadCount: nextUploadCount
         });
       } catch (err) {
@@ -303,15 +354,16 @@ export default function App() {
     }
   }
 
-  // Google Sign-In helper triggers
-  async function triggerGoogleLogin() {
+  // Synchronous click-stack trigger for Google Login (dispatches synchronous CustomEvent)
+  function triggerGoogleLogin() {
     window.dispatchEvent(new CustomEvent('trigger-google-login'));
   }
 
   return (
     <Layout
       currentUser={currentUser}
-      setCurrentUser={setCurrentUser}
+      authError={authError}
+      setAuthError={setAuthError}
       activeView={activeView}
       setActiveView={(view) => {
         setActiveView(view);
@@ -319,16 +371,16 @@ export default function App() {
       }}
       onOpenUpload={() => setUploadOpen(true)}
     >
-      {/* Absolute Loading HUD for startup */}
-      {(authLoading || academicLoading) ? (
+      {/* Absolute Loading HUD while getRedirectResult & onAuthStateChanged settle */}
+      {authLoading || academicLoading ? (
         <div className="flex flex-col items-center justify-center min-h-[70vh] bg-slate-50 dark:bg-slate-950">
           <Loader2 className="w-12 h-12 animate-spin text-indigo-600 dark:text-indigo-400" />
-          <p className="text-sm font-semibold text-slate-500 mt-3 font-display">Authorizing secure university access...</p>
+          <p className="text-sm font-semibold text-slate-500 mt-3 font-display">
+            Authorizing secure university access...
+          </p>
         </div>
       ) : (
         <div className="relative min-h-[70vh]">
-          
-          {/* Main Visual routing */}
           {selectedQuestionId ? (
             <QuestionDetail
               questionId={selectedQuestionId}
@@ -367,12 +419,14 @@ export default function App() {
                 />
               )}
 
-              {activeView === 'admin' && currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'moderator') && (
-                <AdminPanel
-                  currentUser={currentUser}
-                  onNavigateToQuestion={(id) => setSelectedQuestionId(id)}
-                />
-              )}
+              {activeView === 'admin' &&
+                currentUser &&
+                (currentUser.role === 'super_admin' || currentUser.role === 'moderator') && (
+                  <AdminPanel
+                    currentUser={currentUser}
+                    onNavigateToQuestion={(id) => setSelectedQuestionId(id)}
+                  />
+                )}
 
               {activeView === 'leaderboard' && (
                 <Leaderboard
@@ -396,9 +450,8 @@ export default function App() {
                   currentUser={currentUser}
                   departments={departments}
                   onTriggerAuth={triggerGoogleLogin}
-                  onNavigateToDashboardWithFilter={(deptId, examType) => {
+                  onNavigateToDashboardWithFilter={() => {
                     setActiveView('dashboard');
-                    // Store preferred filters in window or state if needed
                   }}
                 />
               )}
@@ -412,7 +465,6 @@ export default function App() {
             currentUser={currentUser}
             onUploadSuccess={handleUploadSuccess}
           />
-
         </div>
       )}
     </Layout>

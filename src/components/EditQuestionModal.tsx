@@ -26,7 +26,14 @@ import { Department, Batch, Semester, ExamType, QuestionPaper } from '../types';
 import { sortSemestersDescending } from '../utils/semesterSort';
 import { sortDepartmentsAlphabetically } from '../utils/departmentSort';
 import { formatImageUrl, handleImageError } from '../utils/imageUrl';
-import { uploadSingleImageToImgBBWithDetails, deleteImagesFromImgBB, generateUniquePaperFileName, PRIMARY_IMGBB_API_KEY } from '../utils/imageUploader';
+import {
+  uploadSingleImageToImgBBWithDetails,
+  deleteImagesFromImgBB,
+  generateUniquePaperFileName,
+  validateImageFile,
+  runWithConcurrency,
+  UPLOAD_CONCURRENCY_LIMIT
+} from '../utils/imageUploader';
 import { recordAuditLog } from '../utils/auditLogger';
 
 interface EditQuestionModalProps {
@@ -61,11 +68,21 @@ export default function EditQuestionModal({ isOpen, onClose, question, currentUs
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  // ImgBB Direct Upload State
-  const imgbbKey = PRIMARY_IMGBB_API_KEY;
+  // Server Upload State
   const [isUploadingFiles, setIsUploadingFiles] = useState(false);
   const [uploadStatusText, setUploadStatusText] = useState('');
   const [dragActive, setDragActive] = useState(false);
+
+  // Warn user before closing tab/window during active upload or submission
+  useEffect(() => {
+    if (!isUploadingFiles && !isSubmitting) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isUploadingFiles, isSubmitting]);
 
   // Initialize fields when question changes or modal opens
   useEffect(() => {
@@ -178,52 +195,98 @@ export default function EditQuestionModal({ isOpen, onClose, question, currentUs
     }
   };
 
-  // Upload files sequentially to ImgBB
+  // Upload files with concurrency limit 2 while preserving selection order
   async function uploadFilesToImgBB(files: FileList) {
-    if (!imgbbKey.trim()) {
-      setNotification({ 
-        type: 'error', 
-        message: 'System Upload API key is not configured. Please contact the administrator.' 
+    const fileArray = Array.from(files);
+    if (fileArray.length === 0) return;
+
+    const validationErrors: string[] = [];
+    const seen = new Set<string>();
+    const validFiles: File[] = [];
+
+    for (const rawFile of fileArray) {
+      const check = validateImageFile(rawFile);
+      if (!check.valid) {
+        validationErrors.push(check.error || `${rawFile.name}: Invalid image file.`);
+        continue;
+      }
+      const sig = `${rawFile.name}_${rawFile.size}_${rawFile.lastModified}`;
+      if (seen.has(sig)) continue;
+      seen.add(sig);
+      validFiles.push(rawFile);
+    }
+
+    if (validFiles.length === 0) {
+      setNotification({
+        type: 'error',
+        message: validationErrors[0] || 'Please select valid image files (JPG, PNG, WEBP, GIF, HEIC).'
       });
       return;
     }
 
     setIsUploadingFiles(true);
     setNotification(null);
-    const newUrls: string[] = [];
-    const newDeleteUrls: string[] = [];
+    let completed = 0;
 
     try {
-      for (let i = 0; i < files.length; i++) {
-        const rawFile = files[i];
-        const uniqueName = generateUniquePaperFileName(rawFile.name, i + 1);
-        const file = new File([rawFile], uniqueName, { type: rawFile.type || 'image/jpeg' });
-        setUploadStatusText(`Optimizing & uploading page ${i + 1}/${files.length}...`);
+      setUploadStatusText(`Uploading 0 of ${validFiles.length} pages...`);
+      const results = await runWithConcurrency(
+        validFiles,
+        async (rawFile, idx) => {
+          const uniqueName = generateUniquePaperFileName(rawFile.name, idx + 1);
+          const file = new File([rawFile], uniqueName, { type: rawFile.type || 'image/jpeg' });
+          const res = await uploadSingleImageToImgBBWithDetails(file);
+          completed += 1;
+          setUploadStatusText(`Uploaded ${completed} of ${validFiles.length} pages...`);
+          return res;
+        },
+        UPLOAD_CONCURRENCY_LIMIT
+      );
 
-        const uploadedResult = await uploadSingleImageToImgBBWithDetails(file, imgbbKey);
-        newUrls.push(uploadedResult.url);
-        if (uploadedResult.deleteUrl) {
-          newDeleteUrls.push(uploadedResult.deleteUrl);
+      const newUrls: string[] = [];
+      const newDeleteUrls: string[] = [];
+      const failedNames: string[] = [];
+
+      results.forEach((result, idx) => {
+        if (result.status === 'fulfilled') {
+          newUrls.push(result.value.url);
+          if (result.value.deleteUrl) {
+            newDeleteUrls.push(result.value.deleteUrl);
+          }
+        } else {
+          failedNames.push(validFiles[idx]?.name || `Page ${idx + 1}`);
         }
-      }
-
-      // Add the uploaded URLs to imageUrls
-      setImageUrls(prev => {
-        const cleaned = prev.filter(url => url.trim() !== '');
-        return [...cleaned, ...newUrls];
       });
+
+      if (newUrls.length > 0) {
+        setImageUrls((prev) => {
+          const cleaned = prev.filter((url) => url.trim() !== '');
+          return [...cleaned, ...newUrls];
+        });
+      }
 
       if (newDeleteUrls.length > 0) {
-        setDeleteUrls(prev => [...prev, ...newDeleteUrls]);
+        setDeleteUrls((prev) => [...prev, ...newDeleteUrls]);
       }
 
-      setNotification({ 
-        type: 'success', 
-        message: 'Image upload success!' 
-      });
+      if (failedNames.length > 0 || validationErrors.length > 0) {
+        const msgParts: string[] = [];
+        if (failedNames.length > 0) {
+          msgParts.push(`Failed to upload: ${failedNames.join(', ')}.`);
+        }
+        if (validationErrors.length > 0) {
+          msgParts.push(validationErrors[0]);
+        }
+        setNotification({ type: 'error', message: msgParts.join(' ') });
+      } else {
+        setNotification({
+          type: 'success',
+          message: `${newUrls.length} ${newUrls.length === 1 ? 'page' : 'pages'} uploaded successfully!`
+        });
+      }
     } catch (err: any) {
       console.error(err);
-      setNotification({ type: 'error', message: err.message || 'Direct upload to ImgBB failed.' });
+      setNotification({ type: 'error', message: err.message || 'Image upload failed.' });
     } finally {
       setIsUploadingFiles(false);
       setUploadStatusText('');
@@ -643,13 +706,18 @@ export default function EditQuestionModal({ isOpen, onClose, question, currentUs
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={isSubmitting}
+            disabled={isSubmitting || isUploadingFiles}
             className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-sm font-semibold shadow-md shadow-indigo-600/15 flex items-center gap-1.5 transition-all"
           >
             {isSubmitting ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
                 Saving...
+              </>
+            ) : isUploadingFiles ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Uploading...
               </>
             ) : (
               <>

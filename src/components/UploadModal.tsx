@@ -43,12 +43,14 @@ import { Department, Batch, Semester, ExamType } from '../types';
 import { sortSemestersDescending } from '../utils/semesterSort';
 import { sortDepartmentsAlphabetically } from '../utils/departmentSort';
 import { formatImageUrl, handleImageError } from '../utils/imageUrl';
-import { 
-  uploadSingleImageToImgBBWithDetails, 
-  deleteImagesFromImgBB, 
+import {
+  uploadSingleImageToImgBBWithDetails,
+  deleteImagesFromImgBB,
   generateUniquePaperFileName,
   createFileFromDataUrl,
-  PRIMARY_IMGBB_API_KEY
+  validateImageFile,
+  runWithConcurrency,
+  UPLOAD_CONCURRENCY_LIMIT
 } from '../utils/imageUploader';
 import FreeCropEditor from './FreeCropEditor';
 
@@ -59,10 +61,17 @@ interface UploadModalProps {
   onUploadSuccess: () => void;
 }
 
+export type PageUploadStatus = 'pending' | 'uploading' | 'done' | 'failed';
+
 interface CapturedPage {
   id: string;
   file?: File | null;
   dataUrl: string;
+  originalName?: string;
+  originalSize?: number;
+  originalLastModified?: number;
+  status: PageUploadStatus;
+  attemptText?: string;
   uploadedUrl?: string;
   deleteUrl?: string;
   isUploading?: boolean;
@@ -179,11 +188,10 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     "Awesome job! Keep sharing and inspiring fellow students!"
   ];
 
-  // Storage & Upload Configuration
-  const imgbbKey = (import.meta as any).env?.VITE_IMGBB_API_KEY || PRIMARY_IMGBB_API_KEY;
-  const [isUploadingFiles, setIsUploadingFiles] = useState(false);
+  // Upload Queue & Status Configuration
   const [uploadStatusText, setUploadStatusText] = useState('');
   const [dragActive, setDragActive] = useState(false);
+  const [showPartialConfirm, setShowPartialConfirm] = useState(false);
 
   // Mobile Direct Camera & Browse Pre-Upload Review State
   const [uploadSourceMode, setUploadSourceMode] = useState<'browse' | 'camera'>('browse');
@@ -195,19 +203,40 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     const raw = getDraftValue('imageUrls', []);
     const rawDelete = getDraftValue('deleteUrls', []);
     if (Array.isArray(raw) && raw.length > 0) {
-      return raw.filter((u: string) => typeof u === 'string' && u.trim() !== '').map((url: string, idx: number) => ({
-        id: `draft_${idx}_${Date.now()}`,
-        dataUrl: formatImageUrl(url),
-        uploadedUrl: formatImageUrl(url),
-        deleteUrl: rawDelete[idx] || undefined,
-        isUploading: false
-      }));
+      return raw
+        .filter((u: string) => typeof u === 'string' && u.trim() !== '')
+        .map((url: string, idx: number) => ({
+          id: `draft_${idx}_${Date.now()}`,
+          dataUrl: formatImageUrl(url),
+          originalName: `Draft Page ${idx + 1}`,
+          status: 'done' as PageUploadStatus,
+          uploadedUrl: formatImageUrl(url),
+          deleteUrl: rawDelete[idx] || undefined,
+          isUploading: false
+        }));
     }
     return [];
   });
   const [retakeIndex, setRetakeIndex] = useState<number | null>(null);
   const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
   const [expandedPreviewUrl, setExpandedPreviewUrl] = useState<string | null>(null);
+
+  const isUploadingFiles = capturedPages.some(
+    (p) => p.status === 'pending' || p.status === 'uploading' || p.isUploading
+  );
+  const failedPagesCount = capturedPages.filter((p) => p.status === 'failed').length;
+  const donePagesCount = capturedPages.filter((p) => p.status === 'done' && Boolean(p.uploadedUrl)).length;
+
+  // Warn before closing/reloading page while an upload or Firestore submission is in progress
+  useEffect(() => {
+    if (!isUploadingFiles && !isSubmitting) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isUploadingFiles, isSubmitting]);
 
   // Sync imageUrls and deleteUrls automatically with capturedPages
   useEffect(() => {
@@ -266,23 +295,27 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
         ...p,
         file,
         dataUrl,
+        status: 'uploading',
         isUploading: true,
         uploadError: undefined
       } : p));
 
-      // Re-upload cropped version to ImgBB
+      // Re-upload cropped version via /api/upload
       try {
-        const res = await uploadSingleImageToImgBBWithDetails(file, imgbbKey);
+        const res = await uploadSingleImageToImgBBWithDetails(file);
         setCapturedPages(prev => prev.map(p => p.id === targetId ? {
           ...p,
           uploadedUrl: res.url,
           deleteUrl: res.deleteUrl,
-          isUploading: false
+          status: 'done',
+          isUploading: false,
+          uploadError: undefined
         } : p));
       } catch (err: any) {
         console.error('Failed to upload cropped image:', err);
         setCapturedPages(prev => prev.map(p => p.id === targetId ? {
           ...p,
+          status: 'failed',
           isUploading: false,
           uploadError: err?.message || 'Crop upload failed'
         } : p));
@@ -318,11 +351,68 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     });
   };
 
-  // Helper to reliably check if a File is an image on any mobile or desktop OS
-  const isImageFile = (f: File): boolean => {
-    if (!f) return false;
-    if (f.type && f.type.startsWith('image/')) return true;
-    return /\.(jpe?g|png|webp|heic|heif|bmp|jfif|tiff?|gif)$/i.test(f.name || '');
+  // Upload a single CapturedPage entry updating status strictly by page.id (preserving order)
+  const uploadPageItem = async (pageId: string, fileToUpload: File) => {
+    setCapturedPages((prev) =>
+      prev.map((p) =>
+        p.id === pageId
+          ? {
+              ...p,
+              file: fileToUpload,
+              status: 'uploading',
+              isUploading: true,
+              uploadError: undefined,
+              attemptText: undefined
+            }
+          : p
+      )
+    );
+
+    try {
+      const result = await uploadSingleImageToImgBBWithDetails(fileToUpload, ({ attempt, maxAttempts }) => {
+        if (attempt > 1) {
+          setCapturedPages((prev) =>
+            prev.map((p) =>
+              p.id === pageId ? { ...p, attemptText: `Retrying (${attempt}/${maxAttempts})...` } : p
+            )
+          );
+        }
+      });
+
+      setCapturedPages((prev) =>
+        prev.map((p) =>
+          p.id === pageId
+            ? {
+                ...p,
+                uploadedUrl: result.url,
+                deleteUrl: result.deleteUrl,
+                status: 'done',
+                isUploading: false,
+                uploadError: undefined,
+                attemptText: undefined
+              }
+            : p
+        )
+      );
+      return result;
+    } catch (err: any) {
+      console.error('Error uploading page:', err);
+      const errMsg = err?.message || 'Upload failed';
+      setCapturedPages((prev) =>
+        prev.map((p) =>
+          p.id === pageId
+            ? {
+                ...p,
+                status: 'failed',
+                isUploading: false,
+                uploadError: errMsg,
+                attemptText: undefined
+              }
+            : p
+        )
+      );
+      throw err;
+    }
   };
 
   // Process files incoming from browse/drag-and-drop OR camera
@@ -331,45 +421,80 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     const fileArray = Array.from(files);
     if (fileArray.length === 0) return;
 
-    const validImageFiles = fileArray.filter(isImageFile);
+    const invalidMessages: string[] = [];
+    const validImageFiles: File[] = [];
+
+    for (const rawFile of fileArray) {
+      const check = validateImageFile(rawFile);
+      if (!check.valid) {
+        invalidMessages.push(check.error || `"${rawFile.name}" is invalid.`);
+      } else {
+        validImageFiles.push(rawFile);
+      }
+    }
+
     if (validImageFiles.length === 0) {
       setNotification({
         type: 'error',
-        message: 'No valid image found. Please select JPG, PNG, or WEBP photos of your exam paper.'
+        message: invalidMessages[0] || 'No valid image found. Please select JPG, PNG, WEBP, GIF, or HEIC images.'
       });
       return;
     }
 
-    // Deduplicate files: prevent adding duplicate copies of the same image file
-    const deduplicatedFiles = validImageFiles.filter(rawFile => {
-      const alreadyPresent = capturedPages.some(p => 
-        p.file && 
-        p.file.name === rawFile.name && 
-        p.file.size === rawFile.size
-      );
-      return !alreadyPresent;
-    });
+    // Deduplicate against BOTH existing capturedPages AND duplicates within current selection
+    const seenSignatures = new Set(
+      capturedPages
+        .filter((p) => p.originalName && typeof p.originalSize === 'number')
+        .map((p) => `${p.originalName}_${p.originalSize}_${p.originalLastModified || 0}`)
+    );
+
+    const deduplicatedFiles: File[] = [];
+    let duplicateCount = 0;
+
+    for (const rawFile of validImageFiles) {
+      const sig = `${rawFile.name}_${rawFile.size}_${rawFile.lastModified || 0}`;
+      if (seenSignatures.has(sig)) {
+        duplicateCount += 1;
+        continue;
+      }
+      seenSignatures.add(sig);
+      deduplicatedFiles.push(rawFile);
+    }
 
     if (deduplicatedFiles.length === 0) {
       setNotification({
         type: 'error',
-        message: 'Selected page image is already added. Duplicate upload prevented.'
+        message:
+          invalidMessages[0] ||
+          'Selected image(s) are already added. Duplicate selection prevented.'
       });
       return;
     }
 
-    setNotification(null);
-    setIsUploadingFiles(true);
+    if (invalidMessages.length > 0) {
+      setNotification({
+        type: 'error',
+        message: `${invalidMessages[0]}${duplicateCount > 0 ? ` (${duplicateCount} duplicate skipped.)` : ''}`
+      });
+    } else if (duplicateCount > 0) {
+      setNotification({
+        type: 'error',
+        message: `${duplicateCount} duplicate file${duplicateCount > 1 ? 's' : ''} skipped.`
+      });
+    } else {
+      setNotification(null);
+    }
 
-    // 1. Instantly create CapturedPage objects with local object URLs for immediate preview (<10ms)
+    // 1. Instantly create CapturedPage entries in exact original selection order with 'pending' status
+    const startIndex = capturedPages.length;
     const newPages: CapturedPage[] = deduplicatedFiles.map((rawFile, i) => {
-      const uniqueName = generateUniquePaperFileName(rawFile.name, capturedPages.length + i + 1);
+      const uniqueName = generateUniquePaperFileName(rawFile.name, startIndex + i + 1);
       const file = new File([rawFile], uniqueName, { type: rawFile.type || 'image/jpeg' });
-      
+
       let localUrl = '';
       try {
         localUrl = URL.createObjectURL(file);
-      } catch (e) {
+      } catch {
         localUrl = '';
       }
 
@@ -377,69 +502,50 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
         id: `page_${Date.now()}_${Math.random().toString(36).substring(2, 7)}_${i}`,
         file,
         dataUrl: localUrl,
+        originalName: rawFile.name,
+        originalSize: rawFile.size,
+        originalLastModified: rawFile.lastModified,
+        status: 'pending' as PageUploadStatus,
         isUploading: true
       };
     });
 
-    // Append to captured pages immediately so preview renders right away!
-    setCapturedPages(prev => [...prev, ...newPages]);
+    setCapturedPages((prev) => [...prev, ...newPages]);
 
-    // 2. Upload pages sequentially
-    for (let idx = 0; idx < newPages.length; idx++) {
-      const page = newPages[idx];
-      if (!page.file) continue;
+    // 2. Upload with max 2 concurrent workers preserving original selection index order
+    let finishedCount = 0;
+    setUploadStatusText(`Uploading 0 of ${newPages.length} pages (max ${UPLOAD_CONCURRENCY_LIMIT} at a time)...`);
 
-      // Small 350ms delay between consecutive uploads to prevent mobile carrier / ImgBB rate limiting
-      if (idx > 0) {
-        await new Promise(r => setTimeout(r, 350));
-      }
+    const results = await runWithConcurrency(
+      newPages,
+      async (page) => {
+        if (!page.file) {
+          throw new Error('Missing file reference');
+        }
+        try {
+          return await uploadPageItem(page.id, page.file);
+        } finally {
+          finishedCount += 1;
+          setUploadStatusText(`Processed ${finishedCount} of ${newPages.length} pages...`);
+        }
+      },
+      UPLOAD_CONCURRENCY_LIMIT
+    );
 
-      try {
-        setUploadStatusText(`Uploading page ${idx + 1} of ${newPages.length}...`);
-        const result = await uploadSingleImageToImgBBWithDetails(page.file, imgbbKey);
-        
-        setCapturedPages(prev => 
-          prev.map(p => {
-            if (p.id === page.id) {
-              return {
-                ...p,
-                uploadedUrl: result.url,
-                deleteUrl: result.deleteUrl,
-                isUploading: false,
-                uploadError: undefined
-              };
-            }
-            return p;
-          })
-        );
-      } catch (err: any) {
-        console.error('Error uploading page:', err);
-        setCapturedPages(prev => 
-          prev.map(p => {
-            if (p.id === page.id) {
-              return {
-                ...p,
-                isUploading: false,
-                uploadError: err?.message || 'Upload failed'
-              };
-            }
-            return p;
-          })
-        );
-        setNotification({
-          type: 'error',
-          message: `Page ${idx + 1} (${page.file.name}) upload failed. Tap "Retry" on the page.`
-        });
-      }
-    }
-
-    setIsUploadingFiles(false);
+    const failedInBatch = results.filter((r) => r.status === 'rejected').length;
     setUploadStatusText('');
+
+    if (failedInBatch > 0) {
+      setNotification({
+        type: 'error',
+        message: `${failedInBatch} of ${newPages.length} page(s) failed to upload. Tap "Retry failed only" to re-upload without restarting the batch.`
+      });
+    }
   };
 
-  // Retry upload for a failed page (recreates File from dataUrl if dropped by mobile browser)
+  // Retry upload for a single failed page
   const handleRetryUpload = async (pageId: string) => {
-    const page = capturedPages.find(p => p.id === pageId);
+    const page = capturedPages.find((p) => p.id === pageId);
     if (!page) return;
 
     let targetFile = page.file;
@@ -459,37 +565,69 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
       return;
     }
 
-    setCapturedPages(prev => 
-      prev.map(p => p.id === pageId ? { ...p, file: targetFile, isUploading: true, uploadError: undefined } : p)
-    );
-
     try {
-      const result = await uploadSingleImageToImgBBWithDetails(targetFile, imgbbKey);
-      setCapturedPages(prev => 
-        prev.map(p => p.id === pageId ? {
-          ...p,
-          uploadedUrl: result.url,
-          deleteUrl: result.deleteUrl,
-          isUploading: false,
-          uploadError: undefined
-        } : p)
-      );
+      await uploadPageItem(pageId, targetFile);
       setNotification({
         type: 'success',
         message: 'Page re-uploaded successfully!'
       });
     } catch (err: any) {
-      console.error('Retry error:', err);
-      setCapturedPages(prev => 
-        prev.map(p => p.id === pageId ? {
-          ...p,
-          isUploading: false,
-          uploadError: err?.message || 'Upload failed'
-        } : p)
-      );
       setNotification({
         type: 'error',
         message: `Retry failed: ${err?.message || 'Network error'}`
+      });
+    }
+  };
+
+  // Retry ONLY failed pages in batches of max 2, keeping already uploaded pages intact
+  const handleRetryFailedOnly = async () => {
+    const failedList = capturedPages.filter((p) => p.status === 'failed');
+    if (failedList.length === 0) return;
+
+    setNotification(null);
+    const failedIds = new Set(failedList.map((p) => p.id));
+    setCapturedPages((prev) =>
+      prev.map((p) =>
+        failedIds.has(p.id)
+          ? { ...p, status: 'pending', isUploading: true, uploadError: undefined }
+          : p
+      )
+    );
+
+    let finished = 0;
+    setUploadStatusText(`Retrying 0 of ${failedList.length} failed pages...`);
+
+    const results = await runWithConcurrency(
+      failedList,
+      async (page) => {
+        let targetFile = page.file;
+        if (!targetFile && page.dataUrl) {
+          targetFile = await createFileFromDataUrl(page.dataUrl, `page_${page.id}.jpg`);
+        }
+        if (!targetFile) {
+          throw new Error('Could not access image data to retry');
+        }
+        try {
+          return await uploadPageItem(page.id, targetFile);
+        } finally {
+          finished += 1;
+          setUploadStatusText(`Retried ${finished} of ${failedList.length} failed pages...`);
+        }
+      },
+      UPLOAD_CONCURRENCY_LIMIT
+    );
+
+    setUploadStatusText('');
+    const stillFailed = results.filter((r) => r.status === 'rejected').length;
+    if (stillFailed === 0) {
+      setNotification({
+        type: 'success',
+        message: `All ${failedList.length} failed page(s) uploaded successfully!`
+      });
+    } else {
+      setNotification({
+        type: 'error',
+        message: `${stillFailed} page(s) still failed. Tap "Retry failed only" again or remove those pages.`
       });
     }
   };
@@ -561,6 +699,15 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     const idx = retakeIndex;
     setRetakeIndex(null);
 
+    const validation = validateImageFile(rawFile);
+    if (!validation.valid) {
+      setNotification({
+        type: 'error',
+        message: validation.error || 'Invalid replacement image.'
+      });
+      return;
+    }
+
     const uniqueName = generateUniquePaperFileName(rawFile.name, idx + 1);
     const file = new File([rawFile], uniqueName, { type: rawFile.type || 'image/jpeg' });
     let localUrl = '';
@@ -570,42 +717,40 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
       localUrl = '';
     }
 
-    // Clean up old ImgBB page if it had uploaded
     const oldPage = capturedPages[idx];
-    if (oldPage?.deleteUrl || oldPage?.uploadedUrl) {
+    if (!oldPage) return;
+
+    if (oldPage.deleteUrl || oldPage.uploadedUrl) {
       deleteImagesFromImgBB(
         oldPage.deleteUrl ? [oldPage.deleteUrl] : [],
         oldPage.uploadedUrl ? [oldPage.uploadedUrl] : []
       ).catch(() => null);
     }
 
-    // Update target page immediately with local preview
-    setCapturedPages(prev => prev.map((p, i) => i === idx ? {
-      ...p,
-      file,
-      dataUrl: localUrl,
-      uploadedUrl: undefined,
-      deleteUrl: undefined,
-      isUploading: true,
-      uploadError: undefined
-    } : p));
+    setCapturedPages((prev) =>
+      prev.map((p, i) =>
+        i === idx
+          ? {
+              ...p,
+              file,
+              dataUrl: localUrl,
+              originalName: rawFile.name,
+              originalSize: rawFile.size,
+              originalLastModified: rawFile.lastModified,
+              status: 'uploading',
+              uploadedUrl: undefined,
+              deleteUrl: undefined,
+              isUploading: true,
+              uploadError: undefined
+            }
+          : p
+      )
+    );
 
-    // Upload to ImgBB in background
     try {
-      const result = await uploadSingleImageToImgBBWithDetails(file, imgbbKey);
-      setCapturedPages(prev => prev.map((p, i) => i === idx ? {
-        ...p,
-        uploadedUrl: result.url,
-        deleteUrl: result.deleteUrl,
-        isUploading: false,
-        uploadError: undefined
-      } : p));
-    } catch (err: any) {
-      setCapturedPages(prev => prev.map((p, i) => i === idx ? {
-        ...p,
-        isUploading: false,
-        uploadError: err?.message || 'Upload failed'
-      } : p));
+      await uploadPageItem(oldPage.id, file);
+    } catch {
+      // uploadPageItem updates status to 'failed' with error message
     }
   };
 
@@ -758,42 +903,55 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
     }
   }
 
-  // Handle form submission
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  // Handle form submission (blocks until all pages succeed OR user confirms partial upload)
+  async function handleSubmit(e?: React.FormEvent, allowPartialConfirm = false) {
+    if (e) e.preventDefault();
     if (!currentUser) {
       setNotification({ type: 'error', message: 'You must be signed in to upload.' });
       return;
     }
 
-    // Check if any pages are currently uploading in the background
-    if (capturedPages.some(p => p.isUploading)) {
+    // Block saving while any upload is pending or active
+    if (capturedPages.some((p) => p.status === 'pending' || p.status === 'uploading' || p.isUploading)) {
       setNotification({
         type: 'error',
-        message: 'Images are still uploading to cloud. Please wait a few seconds for uploads to finish.'
+        message: 'Images are still uploading. Please wait for all pages to finish before submitting.'
       });
       return;
     }
 
-    // Check if any page failed to upload
-    const failedPages = capturedPages.filter(p => p.uploadError && !p.uploadedUrl);
-    if (failedPages.length > 0) {
-      setNotification({
-        type: 'error',
-        message: 'One or more pages failed to upload. Please tap "Retry" on the failed page before submitting.'
-      });
-      return;
-    }
-
+    const failedPages = capturedPages.filter((p) => p.status === 'failed' || (!p.uploadedUrl && p.uploadError));
     const filteredImageUrls = capturedPages
-      .map(p => p.uploadedUrl ? formatImageUrl(p.uploadedUrl.trim()) : '')
-      .filter(u => u && !u.startsWith('blob:'));
+      .filter((p) => p.status === 'done' || (!p.uploadError && Boolean(p.uploadedUrl)))
+      .map((p) => (p.uploadedUrl ? formatImageUrl(p.uploadedUrl.trim()) : ''))
+      .filter((u) => u && !u.startsWith('blob:'));
 
-    if (!selectedDept || !selectedBatch || !selectedSemester || !courseName || filteredImageUrls.length === 0) {
-      setNotification({ type: 'error', message: 'Please upload at least one valid question page image. If uploading, please wait for upload to complete.' });
+    if (!selectedDept || !selectedBatch || !selectedSemester || !courseName) {
+      setNotification({
+        type: 'error',
+        message: 'Please select Department, Batch, Semester, and enter Course Name before submitting.'
+      });
       return;
     }
 
+    if (filteredImageUrls.length === 0) {
+      setNotification({
+        type: 'error',
+        message:
+          failedPages.length > 0
+            ? 'All selected pages failed to upload. Please tap "Retry failed only" before saving.'
+            : 'Please upload at least one valid question page image.'
+      });
+      return;
+    }
+
+    // Require explicit user confirmation before saving if some pages failed
+    if (failedPages.length > 0 && !allowPartialConfirm) {
+      setShowPartialConfirm(true);
+      return;
+    }
+
+    setShowPartialConfirm(false);
     setIsSubmitting(true);
     setNotification(null);
 
@@ -1216,6 +1374,71 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
                   </button>
                 </div>
 
+                {/* Per-file Progress Queue (Pending / Uploading / Done / Failed + Retry Failed Only) */}
+                <div className="p-3 bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                      Upload Progress ({donePagesCount}/{capturedPages.length} ready{failedPagesCount > 0 ? `, ${failedPagesCount} failed` : ''})
+                    </span>
+                    {failedPagesCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleRetryFailedOnly}
+                        disabled={isUploadingFiles}
+                        className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-[11px] font-bold rounded-lg flex items-center gap-1 shadow-xs transition-all cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Retry failed only ({failedPagesCount})</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="max-h-36 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-900 text-[11px]">
+                    {capturedPages.map((page, index) => (
+                      <div key={page.id} className="py-1.5 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-900 rounded font-bold text-slate-600 dark:text-slate-300 shrink-0">
+                            P{index + 1}
+                          </span>
+                          <span className="truncate text-slate-700 dark:text-slate-300 font-medium">
+                            {page.originalName || page.file?.name || `Page ${index + 1}`}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {page.status === 'pending' && (
+                            <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-semibold rounded">
+                              pending
+                            </span>
+                          )}
+                          {page.status === 'uploading' && (
+                            <span className="px-2 py-0.5 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 font-semibold rounded flex items-center gap-1">
+                              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                              {page.attemptText || 'uploading'}
+                            </span>
+                          )}
+                          {page.status === 'done' && (
+                            <span className="px-2 py-0.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 font-semibold rounded flex items-center gap-1">
+                              <CheckCircle2 className="w-2.5 h-2.5" />
+                              done
+                            </span>
+                          )}
+                          {page.status === 'failed' && (
+                            <button
+                              type="button"
+                              onClick={() => handleRetryUpload(page.id)}
+                              className="px-2 py-0.5 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 text-rose-700 dark:text-rose-300 font-bold rounded flex items-center gap-1 cursor-pointer"
+                              title={page.uploadError || 'Retry this page'}
+                            >
+                              <RotateCcw className="w-2.5 h-2.5" />
+                              <span>failed · retry</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {capturedPages.map((page, index) => {
                     const previewSrc = page.dataUrl || (page.uploadedUrl ? formatImageUrl(page.uploadedUrl) : '');
@@ -1298,12 +1521,16 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
 
                           {/* Status Badge Overlay */}
                           <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-none">
-                            {page.isUploading ? (
+                            {page.status === 'pending' ? (
+                              <span className="px-2 py-1 bg-slate-950/80 backdrop-blur-md text-slate-200 border border-slate-600/40 text-[10px] font-bold rounded-md flex items-center gap-1.5 shadow-sm">
+                                Pending...
+                              </span>
+                            ) : page.status === 'uploading' || page.isUploading ? (
                               <span className="px-2 py-1 bg-slate-950/80 backdrop-blur-md text-amber-300 border border-amber-400/30 text-[10px] font-bold rounded-md flex items-center gap-1.5 shadow-sm">
                                 <Loader2 className="w-3 h-3 animate-spin" />
-                                Uploading...
+                                {page.attemptText || 'Uploading...'}
                               </span>
-                            ) : page.uploadError ? (
+                            ) : page.status === 'failed' || page.uploadError ? (
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -1430,14 +1657,19 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
           </button>
           <button
             type="button"
-            onClick={handleSubmit}
-            disabled={isSubmitting}
+            onClick={() => handleSubmit()}
+            disabled={isSubmitting || isUploadingFiles}
             className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-sm font-semibold shadow-md shadow-indigo-600/15 flex items-center gap-1.5 transition-all"
           >
             {isSubmitting ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                Uploading...
+                Saving Paper...
+              </>
+            ) : isUploadingFiles ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Uploading Pages...
               </>
             ) : (
               <>
@@ -1668,22 +1900,73 @@ export default function UploadModal({ isOpen, onClose, currentUser, onUploadSucc
           imageSrc={capturedPages[croppingPageIndex].dataUrl}
           pageIndex={croppingPageIndex}
           onCancel={() => setCroppingPageIndex(null)}
-          onApplyCrop={({ file, dataUrl }) => {
+          onApplyCrop={async ({ file, dataUrl }) => {
             if (croppingPageIndex === null) return;
-            setCapturedPages(prev => {
-              const updated = [...prev];
-              if (updated[croppingPageIndex]) {
-                updated[croppingPageIndex] = {
-                  ...updated[croppingPageIndex],
-                  file,
-                  dataUrl
-                };
-              }
-              return updated;
-            });
+            const target = capturedPages[croppingPageIndex];
+            if (!target) return;
             setCroppingPageIndex(null);
+
+            setCapturedPages((prev) =>
+              prev.map((p) =>
+                p.id === target.id
+                  ? {
+                      ...p,
+                      file,
+                      dataUrl,
+                      status: 'uploading',
+                      uploadedUrl: undefined,
+                      deleteUrl: undefined,
+                      isUploading: true,
+                      uploadError: undefined
+                    }
+                  : p
+              )
+            );
+
+            try {
+              await uploadPageItem(target.id, file);
+            } catch {
+              // Status marked failed inside uploadPageItem
+            }
           }}
         />
+      )}
+
+      {/* Partial Upload Confirmation Modal (never silently save half-uploaded paper) */}
+      {showPartialConfirm && (
+        <div className="fixed inset-0 z-[130] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 bg-amber-500/10 text-amber-600 dark:text-amber-400 rounded-xl border border-amber-500/20 shrink-0">
+                <AlertCircle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Some Pages Failed to Upload
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
+                  {failedPagesCount} of {capturedPages.length} page(s) failed to upload. Do you want to save only the {donePagesCount} uploaded page(s), or go back and retry the failed pages first?
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col sm:flex-row items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowPartialConfirm(false)}
+                className="w-full sm:flex-1 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                Go Back & Retry Failed
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSubmit(undefined, true)}
+                className="w-full sm:w-auto py-2.5 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                Save {donePagesCount} Page(s) Anyway
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Full Image Inspection Lightbox Modal */}

@@ -29,8 +29,12 @@ import {
   Smartphone,
   Globe
 } from 'lucide-react';
-import { signInWithPopup, getRedirectResult, signOut } from 'firebase/auth';
-import { auth, googleProvider, syncUserProfile } from '../firebase/config';
+import {
+  isInAppBrowser as detectInAppBrowser,
+  startGoogleSignIn,
+  signOutUser,
+  AuthErrorInfo
+} from '../firebase/config';
 import ThemeToggle from './ThemeToggle';
 import { PWAInstallEntryPopup, PWAInstallButton, OfflineIndicator } from './PWAInstallPrompt';
 import { UserProfile } from '../types';
@@ -38,58 +42,30 @@ import { UserProfile } from '../types';
 interface LayoutProps {
   children: React.ReactNode;
   currentUser: UserProfile | null;
-  setCurrentUser: (user: UserProfile | null) => void;
+  authError: AuthErrorInfo | null;
+  setAuthError: (err: AuthErrorInfo | null) => void;
   activeView: 'landing' | 'dashboard' | 'profile' | 'admin' | 'leaderboard' | 'faculty' | 'calendar';
   setActiveView: (view: 'landing' | 'dashboard' | 'profile' | 'admin' | 'leaderboard' | 'faculty' | 'calendar') => void;
   onOpenUpload: () => void;
 }
 
-export default function Layout({ 
-  children, 
-  currentUser, 
-  setCurrentUser, 
-  activeView, 
+export default function Layout({
+  children,
+  currentUser,
+  authError,
+  setAuthError,
+  activeView,
   setActiveView,
-  onOpenUpload 
+  onOpenUpload
 }: LayoutProps) {
-  
   const [showUserDropdown, setShowUserDropdown] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [copiedDomain, setCopiedDomain] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
-  const [unauthorizedDomain, setUnauthorizedDomain] = useState<string | null>(null);
-  const [popupBlockedModal, setPopupBlockedModal] = useState(false);
   const [showInAppModal, setShowInAppModal] = useState(false);
+  const [inAppBrowser] = useState(() => detectInAppBrowser());
 
-  // Synchronous and comprehensive in-app browser detection
-  const isAppInAppBrowser = (): boolean => {
-    if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
-    const ua = navigator.userAgent || navigator.vendor || (window as any).opera || '';
-    
-    // 1. Social Media Apps (Facebook, Messenger, Instagram, Line, Twitter/X, WeChat, TikTok, Snapchat, WhatsApp)
-    const socialInApp = /FBAN|FBAV|FB_IAB|FB4A|FBSS|FBIOS|Messenger|Instagram|Line|Twitter|MicroMessenger|Snapchat|TikTok|Bytedance|musical_ly|WhatsApp/i.test(ua);
-    if (socialInApp) return true;
-
-    // 2. Android WebView detection (Android with '; wv)' or 'Version/X.X Chrome')
-    const isAndroidWebView = /Android/i.test(ua) && (/;\s*wv\)/i.test(ua) || /Version\/[0-9.]+\s+(?:Mobile\s+)?Chrome/i.test(ua) || /Version\/[0-9.]+/i.test(ua));
-    if (isAndroidWebView) return true;
-
-    // 3. iOS WebView detection (contains AppleWebKit but not standard Safari / Chrome iOS)
-    const isIOS = /(iPhone|iPod|iPad)/i.test(ua);
-    const isIOSWebView = isIOS && /AppleWebKit/i.test(ua) && !/Safari|CriOS|FxiOS|EdgiOS/i.test(ua);
-    if (isIOSWebView) return true;
-
-    return false;
-  };
-
-  const [isInAppBrowser, setIsInAppBrowser] = useState(() => isAppInAppBrowser());
-
-  useEffect(() => {
-    setIsInAppBrowser(isAppInAppBrowser());
-  }, []);
-
-  // Listen to global trigger-google-login event so any button in the app can trigger login cleanly
+  // Listen to global trigger-google-login event synchronously so click user gesture is preserved
   useEffect(() => {
     const handleTriggerLoginEvent = () => {
       handleLogin();
@@ -98,127 +74,68 @@ export default function Layout({
     return () => window.removeEventListener('trigger-google-login', handleTriggerLoginEvent);
   }, []);
 
-  // Handle redirect sign-in result on page mount gracefully without throwing
-  useEffect(() => {
-    getRedirectResult(auth)
-      .then(async (result) => {
-        if (result?.user) {
-          const profile = await syncUserProfile(result.user);
-          setCurrentUser(profile);
-        }
-      })
-      .catch((err: any) => {
-        // Silently catch known partitioned storage or cancelled errors
-        if (
-          err?.code === 'auth/missing-initial-state' ||
-          err?.code === 'auth/popup-closed-by-user' || 
-          err?.code === 'auth/cancelled-popup-request' ||
-          err?.code === 'auth/user-cancelled'
-        ) {
-          return;
-        }
-        if (err?.code === 'auth/unauthorized-domain') {
-          const domain = typeof window !== 'undefined' ? window.location.hostname : 'current domain';
-          setUnauthorizedDomain(domain);
-        }
-      });
-  }, []);
-
-  function openInExternalChrome() {
+  function openInBrowser() {
     if (typeof window === 'undefined') return;
     const currentUrl = window.location.href;
-    const isAndroid = /Android/i.test(navigator.userAgent || '');
+    const ua = navigator.userAgent || '';
+    const isAndroid = /Android/i.test(ua);
     if (isAndroid) {
-      // Android intent to open native Chrome browser
-      const hostAndPath = window.location.href.replace(/^https?:\/\//, '');
-      const intentUrl = `intent://${hostAndPath}#Intent;scheme=https;package=com.android.chrome;end;`;
+      const hostAndPath = currentUrl.replace(/^https?:\/\//, '');
+      const isChrome = /Chrome/i.test(ua);
+      const intentUrl = isChrome
+        ? `intent://${hostAndPath}#Intent;scheme=https;action=android.intent.action.VIEW;end;`
+        : `intent://${hostAndPath}#Intent;scheme=https;package=com.android.chrome;end;`;
       window.location.href = intentUrl;
     } else {
-      navigator.clipboard.writeText(currentUrl);
+      navigator.clipboard?.writeText(currentUrl).catch(() => {});
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2500);
     }
   }
 
-  function openInSystemBrowser() {
+  function copyCurrentLink() {
     if (typeof window === 'undefined') return;
-    const currentUrl = window.location.href;
-    const isAndroid = /Android/i.test(navigator.userAgent || '');
-    if (isAndroid) {
-      // Android generic browser intent (opens default browser like Chrome, Samsung Internet, Edge)
-      const hostAndPath = window.location.href.replace(/^https?:\/\//, '');
-      const intentUrl = `intent://${hostAndPath}#Intent;scheme=https;action=android.intent.action.VIEW;end;`;
-      window.location.href = intentUrl;
-    } else {
-      navigator.clipboard.writeText(currentUrl);
-      setCopiedLink(true);
-      setTimeout(() => setCopiedLink(false), 2500);
-    }
+    navigator.clipboard?.writeText(window.location.href).catch(() => {});
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2500);
   }
 
-  async function handleLogin() {
-    // CRITICAL: If inside an in-app browser like Messenger or Instagram, Google Sign-In
-    // popups WILL crash or turn the screen white because WebViews disallow OAuth popups.
-    // Show the friendly In-App modal immediately instead!
-    if (isAppInAppBrowser() || isInAppBrowser) {
+  // Synchronous click handler: NO `await` before calling startGoogleSignIn()
+  function handleLogin() {
+    if (detectInAppBrowser()) {
       setShowInAppModal(true);
       setIsLoggingIn(false);
       return;
     }
 
     setAuthError(null);
-    setUnauthorizedDomain(null);
     setIsLoggingIn(true);
 
-    try {
-      const result = await signInWithPopup(auth, googleProvider);
-      if (result?.user) {
-        const profile = await syncUserProfile(result.user);
-        setCurrentUser(profile);
-      }
-    } catch (err: any) {
-      console.error('Google Auth Login error details:', {
-        code: err?.code,
-        message: err?.message,
-        error: err
+    startGoogleSignIn()
+      .then((res) => {
+        if (res.status === 'in-app-browser') {
+          setShowInAppModal(true);
+          setIsLoggingIn(false);
+          return;
+        }
+        if (res.status === 'redirecting') {
+          // Browser is navigating away to Google sign-in
+          return;
+        }
+        if (res.status === 'error') {
+          setAuthError(res.error);
+        }
+        setIsLoggingIn(false);
+      })
+      .catch((err) => {
+        console.error('[Firebase Auth Error]', err?.code || 'unknown', err);
+        setIsLoggingIn(false);
       });
-
-      // User closed popup explicitly
-      if (
-        err?.code === 'auth/popup-closed-by-user' || 
-        err?.code === 'auth/user-cancelled' ||
-        err?.code === 'auth/cancelled-popup-request'
-      ) {
-        setIsLoggingIn(false);
-        return;
-      }
-
-      // Domain not in Firebase Authorized Domains list
-      if (err?.code === 'auth/unauthorized-domain') {
-        const domain = typeof window !== 'undefined' ? window.location.hostname : 'current domain';
-        setUnauthorizedDomain(domain);
-        setIsLoggingIn(false);
-        return;
-      }
-
-      // Browser blocked popup
-      if (err?.code === 'auth/popup-blocked') {
-        setPopupBlockedModal(true);
-        setIsLoggingIn(false);
-        return;
-      }
-
-      // Any other error
-      setAuthError(`Sign-in error (${err?.code || 'auth-error'}): ${err?.message || 'Please try again.'}`);
-    } finally {
-      setIsLoggingIn(false);
-    }
   }
 
   async function handleLogout() {
     try {
-      await signOut(auth);
-      setCurrentUser(null);
+      await signOutUser();
       setActiveView('landing');
       setShowUserDropdown(false);
     } catch (err) {
@@ -229,46 +146,36 @@ export default function Layout({
   return (
     <div id="layout-container" className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans transition-colors duration-300">
 
-      {/* In-App Browser Warning Banner for Messenger / Facebook / Instagram users */}
-      {isInAppBrowser && (
+      {/* In-App Browser Warning Banner */}
+      {inAppBrowser && (
         <div className="bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 px-4 py-2.5 text-xs font-semibold flex items-center justify-between gap-3 shadow-md sticky top-0 z-50">
           <div className="flex items-center gap-2 min-w-0">
             <AlertTriangle className="w-4 h-4 shrink-0 text-slate-950" />
             <span className="truncate">
-              Viewing inside Messenger. Google Sign-In requires an external browser like Chrome or Safari.
+              Please open this page in Chrome or Safari to sign in.
             </span>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             <button
-              onClick={() => setShowInAppModal(true)}
-              className="px-2 py-1 bg-slate-950 text-white rounded-lg text-[11px] font-bold hover:bg-slate-900 transition-all cursor-pointer flex items-center gap-1"
-            >
-              <span>Guide (···)</span>
-            </button>
-            <button
-              onClick={openInExternalChrome}
+              onClick={openInBrowser}
               className="px-2.5 py-1 bg-indigo-950 text-white rounded-lg text-[11px] font-bold hover:bg-black transition-all cursor-pointer flex items-center gap-1"
             >
               <ExternalLink className="w-3 h-3" />
-              <span>Chrome</span>
+              <span>Open in browser</span>
             </button>
             <button
-              onClick={() => {
-                navigator.clipboard.writeText(window.location.href);
-                setCopiedLink(true);
-                setTimeout(() => setCopiedLink(false), 2000);
-              }}
+              onClick={copyCurrentLink}
               className="px-2.5 py-1 bg-white/40 hover:bg-white/60 text-slate-950 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1"
             >
               {copiedLink ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-              <span>{copiedLink ? 'Copied!' : 'Copy'}</span>
+              <span>{copiedLink ? 'Copied!' : 'Copy Link'}</span>
             </button>
           </div>
         </div>
       )}
 
       {/* Premium Top Navigation Bar */}
-      <nav className={`sticky ${isInAppBrowser ? 'top-10' : 'top-0'} z-40 bg-white/80 dark:bg-slate-950/85 backdrop-blur-md border-b border-slate-200/60 dark:border-slate-900/80 transition-all duration-300`}>
+      <nav className={`sticky ${inAppBrowser ? 'top-10' : 'top-0'} z-40 bg-white/80 dark:bg-slate-950/85 backdrop-blur-md border-b border-slate-200/60 dark:border-slate-900/80 transition-all duration-300`}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
             
@@ -527,15 +434,18 @@ export default function Layout({
 
       {/* Main Core View Area */}
       <main className="flex-1 pb-20 md:pb-0">
-        {authError && (
+        {authError && authError.category !== 'unauthorized-domain' && (
           <div className="max-w-xl mx-auto mt-6 mx-4 p-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 rounded-2xl flex items-start gap-3 shadow-lg animate-in fade-in duration-200">
             <div className="p-2 bg-amber-100 dark:bg-amber-900/40 rounded-xl text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">
               <ShieldAlert className="w-4 h-4" />
             </div>
             <div className="flex-1 text-xs">
-              <h4 className="font-bold text-amber-950 dark:text-amber-200">Sign-In Notice</h4>
-              <p className="text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">{authError}</p>
-              
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="font-bold text-amber-950 dark:text-amber-200">{authError.title}</h4>
+                <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">{authError.code}</span>
+              </div>
+              <p className="text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">{authError.message}</p>
+
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button
                   onClick={handleLogin}
@@ -547,12 +457,12 @@ export default function Layout({
                   ) : (
                     <Globe className="w-3.5 h-3.5" />
                   )}
-                  <span>Try Signing In Again</span>
+                  <span>Retry</span>
                 </button>
               </div>
             </div>
-            <button 
-              onClick={() => setAuthError(null)} 
+            <button
+              onClick={() => setAuthError(null)}
               className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900 rounded-lg shrink-0 transition-colors"
               title="Dismiss"
             >
@@ -562,7 +472,7 @@ export default function Layout({
         )}
 
         {/* 1. Modal: Firebase Authorized Domain Whitelisting */}
-        {unauthorizedDomain && (
+        {authError?.category === 'unauthorized-domain' && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl space-y-5">
               <div className="flex items-start justify-between gap-3">
@@ -572,13 +482,13 @@ export default function Layout({
                   </div>
                   <div>
                     <h3 className="text-lg font-bold font-display text-slate-900 dark:text-white">
-                      Firebase Setup: Domain Not Authorized
+                      {authError.title}
                     </h3>
-                    <p className="text-xs text-slate-500">Google OAuth requires adding this preview domain in Firebase Console</p>
+                    <p className="text-xs text-slate-500">Google OAuth requires authorizing this domain in Firebase Console</p>
                   </div>
                 </div>
                 <button
-                  onClick={() => setUnauthorizedDomain(null)}
+                  onClick={() => setAuthError(null)}
                   className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800"
                 >
                   <X className="w-5 h-5" />
@@ -587,15 +497,16 @@ export default function Layout({
 
               <div className="p-4 bg-slate-50 dark:bg-slate-950/80 rounded-2xl border border-slate-200/80 dark:border-slate-800 space-y-2.5">
                 <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  Your current preview hostname needs to be added:
+                  Your current hostname needs to be added:
                 </p>
                 <div className="flex items-center justify-between gap-2 p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800">
                   <code className="text-xs font-mono font-bold text-indigo-600 dark:text-indigo-400 truncate">
-                    {unauthorizedDomain}
+                    {authError.hostname || (typeof window !== 'undefined' ? window.location.hostname : '')}
                   </code>
                   <button
                     onClick={() => {
-                      navigator.clipboard.writeText(unauthorizedDomain);
+                      const host = authError.hostname || window.location.hostname;
+                      navigator.clipboard?.writeText(host);
                       setCopiedDomain(true);
                       setTimeout(() => setCopiedDomain(false), 2500);
                     }}
@@ -605,16 +516,6 @@ export default function Layout({
                     <span>{copiedDomain ? 'Copied!' : 'Copy Domain'}</span>
                   </button>
                 </div>
-              </div>
-
-              <div className="space-y-2 text-xs text-slate-600 dark:text-slate-300">
-                <p className="font-bold text-slate-900 dark:text-white">How to fix in 30 seconds:</p>
-                <ol className="list-decimal list-inside space-y-1.5 pl-1 text-[11px] leading-relaxed">
-                  <li>Click <strong>Open Firebase Auth Settings</strong> below.</li>
-                  <li>Scroll to the <strong>Authorized domains</strong> section and click <strong>Add domain</strong>.</li>
-                  <li>Paste <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{unauthorizedDomain}</span> and click <strong>Add</strong>.</li>
-                  <li>Return here and click <strong>Retry Sign In</strong> — it will log you in immediately!</li>
-                </ol>
               </div>
 
               <div className="flex flex-col sm:flex-row items-center gap-2 pt-2">
@@ -629,19 +530,19 @@ export default function Layout({
                 </a>
                 <button
                   onClick={() => {
-                    setUnauthorizedDomain(null);
+                    setAuthError(null);
                     handleLogin();
                   }}
                   className="w-full sm:w-auto py-3 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold transition-all cursor-pointer"
                 >
-                  Retry Sign In
+                  Retry
                 </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* 2. Modal: In-App Browser Guidance (Messenger / Instagram) */}
+        {/* 2. Modal: In-App Browser Guidance */}
         {showInAppModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl space-y-5">
@@ -652,9 +553,9 @@ export default function Layout({
                   </div>
                   <div>
                     <h3 className="text-lg font-bold font-display text-slate-900 dark:text-white">
-                      Open in External Browser
+                      Please open this page in Chrome or Safari to sign in
                     </h3>
-                    <p className="text-xs text-slate-500">Messenger webview blocks Google OAuth</p>
+                    <p className="text-xs text-slate-500">In-app browsers block Google OAuth</p>
                   </div>
                 </div>
                 <button
@@ -666,103 +567,33 @@ export default function Layout({
               </div>
 
               <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                You are currently viewing this inside Facebook Messenger. Google strictly blocks account sign-in inside in-app webviews to protect account security.
+                Please open this page in Chrome or Safari to sign in. Google blocks account sign-in inside in-app browsers such as Facebook, Instagram, Messenger, Telegram, or Line.
               </p>
 
-              {/* Visual guidance for Messenger 3-dots menu */}
-              <div className="p-3 bg-slate-100 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs space-y-2">
-                <div className="flex items-center justify-between px-3 py-1.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] text-slate-500">
-                  <div className="flex items-center gap-1.5">
-                    <X className="w-3.5 h-3.5 text-slate-400" />
-                    <span className="font-semibold text-slate-700 dark:text-slate-300">Messenger Header</span>
-                  </div>
-                  <div className="flex items-center gap-1 text-indigo-600 dark:text-indigo-400 font-extrabold animate-pulse">
-                    <span>Look top right ➔</span>
-                    <span className="text-xs font-black px-1.5 py-0.5 bg-indigo-500/10 rounded border border-indigo-500/30">···</span>
-                  </div>
-                </div>
-                <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
-                  1. Look at the <strong className="text-slate-900 dark:text-white">three dots (···)</strong> at the very top right of your Messenger screen.<br/>
-                  2. Tap it and select <strong className="text-indigo-600 dark:text-indigo-400">"Open in Chrome"</strong> or <strong className="text-indigo-600 dark:text-indigo-400">"Open in external browser"</strong>.
-                </p>
+              <div className="p-3 bg-slate-100 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                Tap the menu (<strong className="text-slate-900 dark:text-white">···</strong>) in the corner of your screen and choose <strong className="text-indigo-600 dark:text-indigo-400">Open in Chrome / Safari</strong>, or use the buttons below.
               </div>
 
               <div className="space-y-2 pt-1">
                 <button
                   onClick={() => {
-                    openInExternalChrome();
+                    openInBrowser();
                     setShowInAppModal(false);
                   }}
                   className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-md shadow-indigo-600/20 transition-all cursor-pointer"
                 >
                   <ExternalLink className="w-4 h-4" />
-                  <span>Open in Google Chrome (Direct Intent)</span>
+                  <span>Open in browser</span>
                 </button>
 
                 <button
-                  onClick={() => {
-                    openInSystemBrowser();
-                    setShowInAppModal(false);
-                  }}
-                  className="w-full py-2.5 px-4 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer hover:opacity-90"
-                >
-                  <Globe className="w-4 h-4" />
-                  <span>Open in Default Mobile Browser</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(window.location.href);
-                    setCopiedLink(true);
-                    setTimeout(() => setCopiedLink(false), 2500);
-                  }}
+                  onClick={copyCurrentLink}
                   className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer"
                 >
                   {copiedLink ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
-                  <span>{copiedLink ? 'Link Copied! Open Chrome & Paste' : 'Copy Page Link'}</span>
+                  <span>{copiedLink ? 'Link Copied!' : 'Copy Link'}</span>
                 </button>
               </div>
-            </div>
-          </div>
-        )}
-
-        {/* 3. Modal: Browser Popup Blocked */}
-        {popupBlockedModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="p-3 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded-2xl border border-indigo-500/20">
-                    <Globe className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold font-display text-slate-900 dark:text-white">
-                      Launch Google Sign-In
-                    </h3>
-                    <p className="text-xs text-slate-500">Tap below to open Google account window</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setPopupBlockedModal(false)}
-                  className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                Your browser blocked the automatic login popup. Tap the button below to grant direct permission and complete sign-in:
-              </p>
-
-              <button
-                onClick={() => {
-                  setPopupBlockedModal(false);
-                  handleLogin();
-                }}
-                className="w-full py-3 px-4 bg-slate-950 dark:bg-white text-white dark:text-slate-950 font-extrabold rounded-xl text-xs flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer hover:opacity-90"
-              >
-                <span>Open Google Sign-In Window</span>
-              </button>
             </div>
           </div>
         )}
